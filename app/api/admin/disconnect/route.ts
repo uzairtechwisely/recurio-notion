@@ -1,24 +1,19 @@
+// app/api/admin/disconnect/route.ts
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { cookies as getCookies } from "next/headers";
 import { noStoreJson } from "../../_http";
-import { redisGet, redisDel } from "../../_utils";
+import { redisDel } from "../../_utils";
+import { adoptTokenForThisSession } from "../../_session";
 
 export async function POST() {
-  const sid = (await getCookies()).get("sid")?.value;
+  const { sid } = await adoptTokenForThisSession();
   if (!sid) return noStoreJson({ ok: true, note: "no sid" });
 
-  const tokSid = await redisGet<any>(`tok:${sid}`);
-  const tokLatest = await redisGet<any>("tok:latest");
+  try { if (typeof redisDel === "function") await redisDel(`tok:${sid}`); } catch {}
 
-  await redisDel(`tok:${sid}`);
-  if (tokSid && tokLatest && tokSid?.access_token === tokLatest?.access_token) {
-    await redisDel("tok:latest");
-  }
-
-  const res = noStoreJson({ ok: true });
-  res.cookies.set({ name: "sid", value: "", path: "/", maxAge: 0 });
+  const res = noStoreJson({ ok: true, cleared: [`tok:${sid}`] });
+  res.cookies.set({ name: "oauth_state", value: "", path: "/", maxAge: 0 });
   return res;
 }

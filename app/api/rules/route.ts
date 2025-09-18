@@ -7,7 +7,7 @@ import { noStoreJson } from "../_http";
 import { notionClient, ensureManagedContainers, getWorkspaceIdFromToken } from "../_utils";
 import { adoptTokenForThisSession } from "../_session";
 
-/** ---- helpers to normalize inputs ---- */
+/* ---------- small helpers ---------- */
 function toByDayList(input: any): string[] {
   if (!input) return [];
   if (Array.isArray(input)) return input.map(String).map(s => s.trim().toUpperCase()).filter(Boolean);
@@ -15,8 +15,8 @@ function toByDayList(input: any): string[] {
 }
 function titleOf(page: any): string {
   const props = page?.properties || {};
-  for (const key of Object.keys(props)) {
-    const p = (props as any)[key];
+  for (const key of Object.keys(props || {})) {
+    const p: any = (props as any)[key];
     if (p?.type === "title") {
       const arr = p?.title || [];
       return arr.map((t: any) => t?.plain_text || t?.text?.content || "").join("").trim() || "Task";
@@ -25,10 +25,16 @@ function titleOf(page: any): string {
   return "Task";
 }
 
-/** ---- schema repair: add properties + options if missing ---- */
-async function ensureRulesSchema(notion: any, dbId: string) {
-  const needProps: Record<string, any> = {
-    "Rule Name":    { title: {} },
+/* ---------- ensure/repair rules DB schema, return detected keys ---------- */
+async function ensureRulesSchemaAndKeys(notion: any, dbId: string) {
+  const meta: any = await notion.databases.retrieve({ database_id: dbId });
+  const existing: Record<string, any> = meta?.properties || {};
+
+  // Detect current title property key
+  let titleKey = Object.keys(existing).find(k => existing[k]?.type === "title") || "Name";
+
+  // Required (non-title) properties we rely on
+  const needed: Record<string, any> = {
     "Task Page ID": { rich_text: {} },
     "Rule":         { select: { options: [
       { name: "Daily" }, { name: "Weekly" }, { name: "Monthly" }, { name: "Yearly" }, { name: "Custom" }
@@ -43,63 +49,45 @@ async function ensureRulesSchema(notion: any, dbId: string) {
     "Active":       { checkbox: {} },
   };
 
-  const meta: any = await notion.databases.retrieve({ database_id: dbId });
-  const existingProps: Record<string, any> = meta?.properties || {};
-
   const patch: { properties: Record<string, any> } = { properties: {} };
 
-  const entries = Object.entries(needProps) as Array<[string, any]>;
-  for (const [name, def] of entries) {
-    const have: any = existingProps[name];
+  // Create missing non-title properties and fill missing options
+  for (const [name, def] of Object.entries(needed) as Array<[string, any]>) {
+    const have: any = existing[name];
 
-    // Missing property entirely → add it
     if (!have) {
       patch.properties[name] = def;
       continue;
     }
-
-    // Enrich select options (if needed)
+    // Enrich select options if needed
     if (def?.select) {
       const haveOpts = (have.select?.options || []).map((o: any) => String(o.name));
       const needOpts = (def.select.options || []).map((o: any) => String(o.name));
       const addOpts = needOpts.filter((n: string) => !haveOpts.includes(n));
       if (addOpts.length) {
         patch.properties[name] = {
-          select: {
-            options: [
-              ...(have.select?.options || []),
-              ...addOpts.map((n: string) => ({ name: n })),
-            ],
-          },
+          select: { options: [ ...(have.select?.options || []), ...addOpts.map((n: string) => ({ name: n })) ] }
         };
       }
     }
-
-    // Enrich multi_select options (if needed)
+    // Enrich multi_select options if needed
     if (def?.multi_select) {
       const haveOpts = (have.multi_select?.options || []).map((o: any) => String(o.name));
       const needOpts = (def.multi_select.options || []).map((o: any) => String(o.name));
       const addOpts = needOpts.filter((n: string) => !haveOpts.includes(n));
       if (addOpts.length) {
         patch.properties[name] = {
-          multi_select: {
-            options: [
-              ...(have.multi_select?.options || []),
-              ...addOpts.map((n: string) => ({ name: n })),
-            ],
-          },
+          multi_select: { options: [ ...(have.multi_select?.options || []), ...addOpts.map((n: string) => ({ name: n })) ] }
         };
       }
     }
   }
 
-  // Apply only if we actually changed something
   if (Object.keys(patch.properties).length > 0) {
-    await notion.databases.update({
-      database_id: dbId,
-      properties: patch.properties,
-    });
+    await notion.databases.update({ database_id: dbId, properties: patch.properties });
   }
+
+  return { titleKey };
 }
 
 export async function POST(req: Request) {
@@ -122,15 +110,13 @@ export async function POST(req: Request) {
     const workspaceId = (await getWorkspaceIdFromToken(tok)) || tok.workspace_id;
     if (!workspaceId) return noStoreJson({ ok: false, error: "no_workspace_id" }, 400);
 
-    // Ensure managed containers exist and are unarchived
+    // Ensure managed containers exist; unarchive the container page defensively
     const { dbId: rulesDb, pageId: managedPageId } = await ensureManagedContainers(notion, workspaceId);
     if (!rulesDb) return noStoreJson({ ok: false, error: "rules_db_missing" }, 500);
-    if (managedPageId) {
-      try { await notion.pages.update({ page_id: managedPageId, archived: false }); } catch {}
-    }
+    if (managedPageId) { try { await notion.pages.update({ page_id: managedPageId, archived: false }); } catch {} }
 
-    // Repair/ensure schema & options (select/multi_select)
-    await ensureRulesSchema(notion, rulesDb);
+    // Ensure schema and discover title key
+    const { titleKey } = await ensureRulesSchemaAndKeys(notion, rulesDb);
 
     // Load task; refuse if archived
     const task: any = await notion.pages.retrieve({ page_id: taskPageId });
@@ -139,20 +125,20 @@ export async function POST(req: Request) {
     }
     const title = titleOf(task);
 
-    // Build safe properties for create/update
+    // Build properties with dynamic title key
     const ruleProps: any = {
-      "Rule Name":    { title: [{ text: { content: title } }] },
+      [titleKey]:    { title: [{ text: { content: title } }] },
       "Task Page ID": { rich_text: [{ type: "text", text: { content: taskPageId } }] },
       "Rule":         { select: { name: custom ? "Custom" : rule } },
       "By Day":       { multi_select: byday.map((n: string) => ({ name: n })) },
       "Interval":     { number: Number.isFinite(interval) ? interval : 1 },
       "Active":       { checkbox: true },
     };
-    if (time)    ruleProps["Time"]    = { rich_text: [{ type: "text", text: { content: time } }] };
-    if (tz)      ruleProps["Timezone"]= { rich_text: [{ type: "text", text: { content: tz } }] };
-    if (custom)  ruleProps["Custom RRULE"] = { rich_text: [{ type: "text", text: { content: custom } }] };
+    if (time)   ruleProps["Time"]         = { rich_text: [{ type: "text", text: { content: time } }] };
+    if (tz)     ruleProps["Timezone"]     = { rich_text: [{ type: "text", text: { content: tz } }] };
+    if (custom) ruleProps["Custom RRULE"] = { rich_text: [{ type: "text", text: { content: custom } }] };
 
-    // Check for existing rule (even if archived, we'll unarchive then update)
+    // Find existing rule (even if archived)
     const existing: any = await notion.databases.query({
       database_id: rulesDb,
       filter: { property: "Task Page ID", rich_text: { equals: taskPageId } },
@@ -173,7 +159,7 @@ export async function POST(req: Request) {
     return noStoreJson({ ok: true, created: true, pageId: created.id });
 
   } catch (e: any) {
-    // Give you maximal, safe diagnostics
+    // Bubble up exact Notion diagnostics so you can show them in UI
     const detail = e?.message || String(e);
     const status = e?.status || e?.code || null;
     return noStoreJson({ ok: false, error: "save_rule_failed", status, detail }, 500);

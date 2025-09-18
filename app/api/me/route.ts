@@ -2,12 +2,12 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { cookies } from "next/headers";
+import { cookies as getCookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { redisGet } from "../_utils";
 
 export async function GET() {
-  const sid = cookies().get("sid")?.value || null;
+  const sid = (await getCookies()).get("sid")?.value;
 
   // Prefer per-session token, but allow fallback for embedded reconnect UX
   const tokBySid = sid ? await redisGet<any>(`tok:${sid}`) : null;

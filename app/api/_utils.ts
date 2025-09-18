@@ -17,11 +17,7 @@ async function r(cmd: string) {
 export async function redisGet<T = any>(key: string): Promise<T | null> {
   const res = await r(`get/${encodeURIComponent(key)}`);
   if (res == null) return null;
-  try {
-    return JSON.parse(res) as T;
-  } catch {
-    return res as T;
-  }
+  try { return JSON.parse(res) as T; } catch { return res as T; }
 }
 
 export async function redisSet(key: string, val: any) {
@@ -35,15 +31,11 @@ export async function redisSAdd(setKey: string, member: string) {
 
 export async function redisSMembers(setKey: string): Promise<string[]> {
   const res = await r(`smembers/${encodeURIComponent(setKey)}`);
-  try {
-    return JSON.parse(res);
-  } catch {
-    return Array.isArray(res) ? (res as string[]) : [];
-  }
+  try { return JSON.parse(res); } catch { return Array.isArray(res) ? (res as string[]) : []; }
+}
+
 export async function redisDel(key: string) {
   await r(`del/${encodeURIComponent(key)}`);
-  }
-
 }
 
 // -------- Notion helpers ----------
@@ -51,31 +43,20 @@ export function notionClient(token: string) {
   return new Client({ auth: token });
 }
 
-// RRULE builder (supports simple presets or a custom string)
+// RRULE builder (supports presets or a custom string)
 export function buildRRule(input: {
-  rule: string;
-  byday?: string[];
-  interval?: number;
-  time?: string;
-  custom?: string;
+  rule: string; byday?: string[]; interval?: number; time?: string; custom?: string;
 }) {
   const { rule, byday = [], interval = 1, time, custom } = input;
-
   if (rule === "Custom" && custom) return rrulestr(custom);
 
   const opts: any = { freq: RRule.DAILY, interval: Number(interval || 1) };
-  if (rule === "Weekly") {
-    opts.freq = RRule.WEEKLY;
-    if (byday.length) opts.byweekday = byday.map((d) => (RRule as any)[d]);
-  }
+  if (rule === "Weekly") { opts.freq = RRule.WEEKLY; if (byday.length) opts.byweekday = byday.map((d) => (RRule as any)[d]); }
   if (rule === "Monthly") opts.freq = RRule.MONTHLY;
-  if (rule === "Yearly") opts.freq = RRule.YEARLY;
+  if (rule === "Yearly")  opts.freq = RRule.YEARLY;
 
   const dt = new Date();
-  if (time) {
-    const [h, m = "0"] = time.split(":");
-    dt.setHours(Number(h), Number(m), 0, 0);
-  }
+  if (time) { const [h, m = "0"] = time.split(":"); dt.setHours(Number(h), Number(m), 0, 0); }
   opts.dtstart = dt;
   return new RRule(opts);
 }
@@ -99,9 +80,7 @@ export async function ensureManagedContainers(
     const p: any = await notion.pages.create({
       parent: { type: "workspace", workspace: true } as any,
       icon: { type: "emoji", emoji: "🗂️" },
-      properties: {
-        title: { title: [{ text: { content: "Techwisely (Managed)" } }] },
-      },
+      properties: { title: { title: [{ text: { content: "Techwisely (Managed)" } }] } },
     } as any);
     pageId = p.id as string;
     await redisSet(`managedpage:${workspaceId}`, pageId);
@@ -116,22 +95,10 @@ export async function ensureManagedContainers(
       properties: {
         "Rule Name": { title: {} },
         "Task Page ID": { rich_text: {} },
-        "Rule": {
-          select: {
-            options: [
-              { name: "Daily" },
-              { name: "Weekly" },
-              { name: "Monthly" },
-              { name: "Yearly" },
-              { name: "Custom" },
-            ],
-          },
-        },
-        "By Day": {
-          multi_select: {
-            options: ["MO", "TU", "WE", "TH", "FR", "SA", "SU"].map((n) => ({ name: n })),
-          },
-        },
+        "Rule": { select: { options: [
+          { name: "Daily" }, { name: "Weekly" }, { name: "Monthly" }, { name: "Yearly" }, { name: "Custom" }
+        ]}},
+        "By Day": { multi_select: { options: ["MO","TU","WE","TH","FR","SA","SU"].map((n) => ({ name: n })) } },
         "Interval": { number: { format: "number" } },
         "Time": { rich_text: {} },
         "Timezone": { rich_text: {} },
@@ -151,8 +118,6 @@ export async function ensureManagedContainers(
     }
   }
 
-  // Final non-null guarantee for TypeScript
   if (!pageId || !dbId) throw new Error("Failed to ensure managed containers");
-
   return { pageId, dbId };
 }

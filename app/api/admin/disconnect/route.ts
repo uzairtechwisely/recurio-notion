@@ -2,12 +2,12 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { cookies } from "next/headers";
+import { cookies as getCookies } from "next/headers";
 import { noStoreJson } from "../../_http";
 import { redisGet, redisDel } from "../../_utils";
 
 export async function POST() {
-  const sid = cookies().get("sid")?.value;
+  const sid = (await getCookies()).get("sid")?.value;
   if (!sid) return noStoreJson({ ok: true, note: "no sid" });
 
   const tokSid = await redisGet<any>(`tok:${sid}`);

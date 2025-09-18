@@ -1,4 +1,3 @@
-// app/api/oauth/callback/route.ts
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
@@ -9,6 +8,7 @@ import { redisSet } from "../../_utils";
 
 export async function GET(req: Request) {
   const u = new URL(req.url);
+  const origin = u.origin; // match start route origin
   const code = u.searchParams.get("code");
   const inboundState = u.searchParams.get("state");
 
@@ -22,7 +22,7 @@ export async function GET(req: Request) {
 
   const clientId = process.env.NOTION_CLIENT_ID!;
   const clientSecret = process.env.NOTION_CLIENT_SECRET!;
-  const redirectUri = `${process.env.APP_URL}/api/oauth/callback`;
+  const redirectUri = `${origin}/api/oauth/callback`;
 
   const tokenRes = await fetch("https://api.notion.com/v1/oauth/token", {
     method: "POST",
@@ -49,8 +49,8 @@ export async function GET(req: Request) {
   await redisSet(`tok:${sid}`, tok);
   await redisSet("tok:latest", tok);
 
-  // Clear state cookie and bounce to app
-  const res = noStoreRedirect(process.env.APP_URL!);
+  // Clear state cookie and send user back to the same origin
+  const res = noStoreRedirect(origin);
   res.cookies.set({ name: "oauth_state", value: "", path: "/", maxAge: 0 });
   return res;
 }

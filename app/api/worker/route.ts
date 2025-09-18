@@ -41,16 +41,23 @@ export async function GET(req: Request) {
   });
 
   let processed = 0, created = 0;
-  const details:any[] = [];
+  const details: Array<{ from: string; to: string; title: string; next: string; movedRule: boolean }> = [];
 
   for (const r of rules.results) {
     const props = r.properties as any;
 
     // read rule config + current task id
     const taskId: string | undefined = props["Task Page ID"]?.rich_text?.[0]?.plain_text;
-    const cfg = {
+    const cfg: {
+      rule: string;
+      byday: string[];
+      interval: number;
+      time: string;
+      tz: string;
+      custom: string;
+    } = {
       rule: props["Rule"]?.select?.name || "Weekly",
-      byday: (props["By Day"]?.multi_select || []).map((x:any)=>x.name),
+      byday: (props["By Day"]?.multi_select || []).map((x: any) => x.name as string),
       interval: props["Interval"]?.number || 1,
       time: (props["Time"]?.rich_text?.[0]?.plain_text || ""),
       tz: (props["Timezone"]?.rich_text?.[0]?.plain_text || ""),
@@ -106,7 +113,7 @@ export async function GET(req: Request) {
         }
       });
       moved = true;
-    } catch (e) {
+    } catch {
       // fallback: create a fresh rule row for the new task so the series never breaks
       try {
         await notion.pages.create({
@@ -115,7 +122,7 @@ export async function GET(req: Request) {
             "Rule Name": { title: [{ text: { content: `Rule for ${newTask.id.slice(0,6)}` } }] },
             "Task Page ID": { rich_text: [{ type: "text", text: { content: newTask.id } }] },
             "Rule": { select: { name: cfg.rule } },
-            "By Day": { multi_select: cfg.byday.map((n)=>({ name:n })) },
+            "By Day": { multi_select: (cfg.byday || []).map((n: string) => ({ name: n })) },
             "Interval": { number: Number(cfg.interval || 1) },
             "Time": { rich_text: [{ type: "text", text: { content: cfg.time || "" } }] },
             "Timezone": { rich_text: [{ type: "text", text: { content: cfg.tz || "" } }] },

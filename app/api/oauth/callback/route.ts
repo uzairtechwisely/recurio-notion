@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { cookies as getCookies } from "next/headers";
 import { Client } from "@notionhq/client";
 import { redisSet } from "../../_utils";
 
@@ -7,9 +7,10 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const code = searchParams.get("code");
   const state = searchParams.get("state");
-  const c = cookies();
-  const oldState = c.get("oauth_state")?.value;
-  const sid = c.get("sid")?.value;
+
+  const store = await getCookies();                 // ← await
+  const oldState = store.get("oauth_state")?.value;
+  const sid = store.get("sid")?.value;
 
   if (!code || !state || state !== oldState || !sid) {
     return new NextResponse("Bad OAuth state", { status: 400 });
@@ -19,9 +20,10 @@ export async function GET(req: Request) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": "Basic " + Buffer
-        .from(`${process.env.NOTION_CLIENT_ID}:${process.env.NOTION_CLIENT_SECRET}`)
-        .toString("base64")
+      "Authorization":
+        "Basic " + Buffer.from(
+          `${process.env.NOTION_CLIENT_ID}:${process.env.NOTION_CLIENT_SECRET}`
+        ).toString("base64")
     },
     body: JSON.stringify({
       grant_type: "authorization_code",
@@ -29,14 +31,17 @@ export async function GET(req: Request) {
       redirect_uri: `${process.env.APP_URL}/api/oauth/callback`
     })
   });
-  const tok = await tokenRes.json() as any;
-  if (!tok?.access_token) return new NextResponse("OAuth failed", { status: 400 });
+
+  const tok = await tokenRes.json();
+  if (!(tok as any)?.access_token) {
+    return new NextResponse("OAuth failed", { status: 400 });
+  }
 
   await redisSet(`tok:${sid}`, tok);
 
-  // Auto-create a panel page with an embed to your app (optional but nice)
+  // (Optional) create the embedded panel page
   try {
-    const notion = new Client({ auth: tok.access_token });
+    const notion = new Client({ auth: (tok as any).access_token });
     await notion.pages.create({
       parent: { type: "workspace", workspace: true },
       icon: { type: "emoji", emoji: "🔁" },

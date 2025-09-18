@@ -1,3 +1,4 @@
+// app/api/oauth/callback/route.ts
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
@@ -10,11 +11,13 @@ export async function GET(req: Request) {
   const u = new URL(req.url);
   const code = u.searchParams.get("code");
   const inboundState = u.searchParams.get("state");
-  const sid = (await getCookies()).get("sid")?.value
-  const sid = (await getCookies()).get("sid")?.value
+
+  const jar = await getCookies();
+  const stateCookie = jar.get("oauth_state")?.value || null;
+  const sid = jar.get("sid")?.value || null;
 
   if (!code || !inboundState || !stateCookie || inboundState !== stateCookie || !sid) {
-    return noStoreJson({ ok:false, error:"Bad OAuth state" }, 400);
+    return noStoreJson({ ok: false, error: "Bad OAuth state" }, 400);
   }
 
   const clientId = process.env.NOTION_CLIENT_ID!;
@@ -37,16 +40,16 @@ export async function GET(req: Request) {
 
   if (!tokenRes.ok) {
     const t = await tokenRes.text().catch(() => "");
-    return noStoreJson({ ok:false, error: `Token exchange failed: ${t || tokenRes.status}` }, 400);
+    return noStoreJson({ ok: false, error: `Token exchange failed: ${t || tokenRes.status}` }, 400);
   }
 
   const tok = await tokenRes.json();
 
   // Store per-session token; also update tok:latest for /me fallback
   await redisSet(`tok:${sid}`, tok);
-  await redisSet(`tok:latest`, tok);
+  await redisSet("tok:latest", tok);
 
-  // Clear state cookie
+  // Clear state cookie and bounce to app
   const res = noStoreRedirect(process.env.APP_URL!);
   res.cookies.set({ name: "oauth_state", value: "", path: "/", maxAge: 0 });
   return res;

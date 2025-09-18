@@ -58,11 +58,30 @@ export default function Home() {
     alert(j.ok ? "Recurring set." : j.error || "Failed");
   }
 
-  async function runNow() {
-    const r = await fetch("/api/worker");
-    const d = await r.json();
-    alert(`Processed ${d.processed}, created ${d.created}`);
-  }
+  // at the top
+const [syncResult, setSyncResult] = useState<null | { processed:number; created:number; details:any[] }>(null);
+
+// replace runNow() with:
+async function runNow() {
+  setSyncResult(null);
+  const r = await fetch("/api/worker");
+  const d = await r.json();
+  setSyncResult(d);
+}
+
+// in the JSX, inside the form buttons area (under “Sync now” button), add:
+{syncResult && (
+  <div style={{marginTop:8, border:"1px solid #111", padding:8}}>
+    <b>Sync result:</b> processed {syncResult.processed}, created {syncResult.created}
+    {syncResult.details?.length ? (
+      <ul style={{marginTop:6}}>
+        {syncResult.details.map((it, i) => (
+          <li key={i}><small>Created next for <code>{it.title}</code> → due {new Date(it.next).toLocaleString()}</small></li>
+        ))}
+      </ul>
+    ) : null}
+  </div>
+)}
 
   return (
     <main style={{maxWidth:840, margin:"32px auto", padding:"0 16px", fontFamily:"system-ui, Arial"}}>

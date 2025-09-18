@@ -20,7 +20,7 @@ export async function GET(req: Request) {
   const dbId = u.searchParams.get("db");
   if (!dbId) return noStoreJson({ tasks: [], meta: {} });
 
-  const sid = (await getCookies()).get("sid")?.value;
+  const sid = (await getCookies()).get("sid")?.value || null;
   const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
   if (!tok?.access_token) return noStoreJson({ tasks: [], meta: {} }, 401);
 

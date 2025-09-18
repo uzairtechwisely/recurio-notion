@@ -7,9 +7,12 @@ import { cookies as getCookies } from "next/headers";
 import { noStoreRedirect } from "../../_http";
 import { nanoid } from "nanoid";
 
+// app/api/oauth/start/route.ts
 export async function GET(req: Request) {
-  const origin = new URL(req.url).origin;
-  const redirectUri = `${origin}/api/oauth/callback`;
+  const base = process.env.APP_URL || new URL(req.url).origin;
+  const redirectUri = `${base}/api/oauth/callback`;
+  // ...rest stays the same...
+}
 
   const clientId = process.env.NOTION_CLIENT_ID!;
   const state = nanoid();

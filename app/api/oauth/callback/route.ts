@@ -8,7 +8,7 @@ import { redisSet } from "../../_utils";
 
 export async function GET(req: Request) {
   const u = new URL(req.url);
-  const origin = u.origin; // match start route origin
+  const origin = u.origin; // must match start route origin
   const code = u.searchParams.get("code");
   const inboundState = u.searchParams.get("state");
 
@@ -44,12 +44,9 @@ export async function GET(req: Request) {
   }
 
   const tok = await tokenRes.json();
-
-  // Store per-session token; also update tok:latest for /me fallback
   await redisSet(`tok:${sid}`, tok);
   await redisSet("tok:latest", tok);
 
-  // Clear state cookie and send user back to the same origin
   const res = noStoreRedirect(origin);
   res.cookies.set({ name: "oauth_state", value: "", path: "/", maxAge: 0 });
   return res;

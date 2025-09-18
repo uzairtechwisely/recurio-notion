@@ -53,7 +53,7 @@ export default function Home() {
 
   return (
     <main className="container">
-      <h1>Recurio — barebones</h1>
+      <h1>Recurio — barebones v2</h1>
 
       {!connected ? (
         <div className="card">

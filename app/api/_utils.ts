@@ -66,15 +66,163 @@ export async function getWorkspaceIdFromToken(tok: any): Promise<string | null> 
   return tok?.workspace_id || null;
 }
 
-// Ensure: parent page "Techwisely (Managed)" and child DB "Recurrence Rules (Managed)"
-export async function ensureManagedContainers(
-  notion: Client,
-  workspaceId: string
-): Promise<{ pageId: string; dbId: string }> {
-  // Try cache
-  let pageId: string | null = await redisGet<string>(`managedpage:${workspaceId}`);
-  let dbId: string | null = await redisGet<string>(`rulesdb:${workspaceId}`);
+// app/api/_utils.ts  (only the ensureManagedContainers export below)
+// ...keep your other imports/helpers as-is...
+import { redisGet, redisSet } from "./_utils"; // your existing redis helpers
 
+export async function ensureManagedContainers(notion: any, workspaceId: string) {
+  const PAGE_KEY  = `managedpage:${workspaceId}`;
+  const DB_KEY    = `rulesdb:${workspaceId}`;
+  const PANEL_KEY = `managedpanel:${workspaceId}`;
+
+  // --- 1) Parent page: "Recurio (Managed)" (back-compat: "Techwisely Managed")
+  let pageId = await redisGet<string>(PAGE_KEY);
+  if (!pageId) {
+    try {
+      const sr: any = await notion.search({
+        query: "Recurio (Managed)",
+        filter: { value: "page", property: "object" },
+        page_size: 25,
+      });
+      pageId = sr.results?.find((r: any) => {
+        const t =
+          r.properties?.title?.title?.[0]?.plain_text ||
+          r.title?.[0]?.plain_text ||
+          "";
+        return t === "Recurio (Managed)";
+      })?.id;
+
+      // Back-compat lookup for prior name
+      if (!pageId) {
+        const sr2: any = await notion.search({
+          query: "Techwisely Managed",
+          filter: { value: "page", property: "object" },
+          page_size: 25,
+        });
+        pageId = sr2.results?.find((r: any) => {
+          const t =
+            r.properties?.title?.title?.[0]?.plain_text ||
+            r.title?.[0]?.plain_text ||
+            "";
+          return t === "Techwisely Managed";
+        })?.id;
+      }
+    } catch {}
+  }
+  if (!pageId) {
+    // API supports { workspace: true } even if TS defs complain
+    const created: any = await notion.pages.create({
+      parent: { workspace: true } as any,
+      icon: { type: "emoji", emoji: "🛠️" },
+      properties: { title: { title: [{ text: { content: "Recurio (Managed)" } }] } },
+    } as any);
+    pageId = created.id;
+    await redisSet(PAGE_KEY, pageId);
+  }
+
+  // --- 2) Rules DB: "Recurrence Rules (Managed)"
+  let dbId = await redisGet<string>(DB_KEY);
+  if (!dbId) {
+    try {
+      const searchDb: any = await notion.search({
+        query: "Recurrence Rules (Managed)",
+        filter: { value: "database", property: "object" },
+        page_size: 25,
+      });
+      dbId = searchDb.results?.find((d: any) => {
+        const t =
+          d.title?.[0]?.plain_text ||
+          d.properties?.title?.title?.[0]?.plain_text ||
+          "";
+        return t === "Recurrence Rules (Managed)";
+      })?.id;
+    } catch {}
+  }
+  if (!dbId) {
+    const db: any = await notion.databases.create({
+      parent: { page_id: pageId },
+      title: [{ type: "text", text: { content: "Recurrence Rules (Managed)" } }],
+      properties: {
+        "Rule Name": { title: {} },
+        "Task Page ID": { rich_text: {} },
+        "Rule": {
+          select: {
+            options: [
+              { name: "Daily" },
+              { name: "Weekly" },
+              { name: "Monthly" },
+              { name: "Yearly" },
+              { name: "Custom" },
+            ],
+          },
+        },
+        "By Day": {
+          multi_select: { options: ["MO", "TU", "WE", "TH", "FR", "SA", "SU"].map((n) => ({ name: n })) },
+        },
+        "Interval": { number: {} },
+        "Time": { rich_text: {} },
+        "Timezone": { rich_text: {} },
+        "Custom RRULE": { rich_text: {} },
+        "Active": { checkbox: {} },
+      },
+    } as any);
+    dbId = db.id;
+    await redisSet(DB_KEY, dbId);
+  }
+
+  // --- 3) Panel page: "Recurio Dashboard" with an Embed to your app
+  let panelId = await redisGet<string>(PANEL_KEY);
+  if (!panelId) {
+    try {
+      const sr: any = await notion.search({
+        query: "Recurio Dashboard",
+        filter: { value: "page", property: "object" },
+        page_size: 25,
+      });
+      panelId = sr.results?.find((r: any) => {
+        const t =
+          r.properties?.title?.title?.[0]?.plain_text ||
+          r.title?.[0]?.plain_text ||
+          "";
+        return t === "Recurio Dashboard";
+      })?.id;
+
+      // Back-compat lookup for prior name
+      if (!panelId) {
+        const sr2: any = await notion.search({
+          query: "Techwisely Recurrence Panel",
+          filter: { value: "page", property: "object" },
+          page_size: 25,
+        });
+        panelId = sr2.results?.find((r: any) => {
+          const t =
+            r.properties?.title?.title?.[0]?.plain_text ||
+            r.title?.[0]?.plain_text ||
+            "";
+          return t === "Techwisely Recurrence Panel";
+        })?.id;
+      }
+    } catch {}
+  }
+  if (!panelId) {
+    const createdPanel: any = await notion.pages.create({
+      parent: { page_id: pageId },
+      icon: { type: "emoji", emoji: "🔁" },
+      properties: { title: { title: [{ text: { content: "Recurio Dashboard" } }] } },
+      children: [
+        {
+          object: "block",
+          type: "embed",
+          embed: { url: process.env.APP_URL || "https://example.com" },
+        },
+      ],
+    } as any);
+    panelId = createdPanel.id;
+    await redisSet(PANEL_KEY, panelId);
+  }
+
+  return { pageId, dbId, panelId };
+}
   // Create parent page if missing
   if (!pageId) {
     const p: any = await notion.pages.create({

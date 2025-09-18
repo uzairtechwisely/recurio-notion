@@ -1,34 +1,52 @@
+// app/api/me/route.ts
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { NextResponse } from "next/server";
 import { cookies as getCookies } from "next/headers";
+import { NextResponse } from "next/server";
 import { redisGet } from "../_utils";
 
 export async function GET() {
-  const store = await getCookies();
-  const sid = store.get("sid")?.value || null;
+  const sid = (await getCookies()).get("sid")?.value || null;
 
-  // Look for a session token, then fall back to last successful token (for iframes)
+  // Keep your UX: prefer per-session, fallback to last good token (for iframes/popups)
   const tokBySid = sid ? await redisGet<any>(`tok:${sid}`) : null;
   const tokLatest = await redisGet<any>("tok:latest");
   const tok = tokBySid || tokLatest;
 
-  if (!tok?.access_token) return NextResponse.json({ connected: false });
+  if (!tok?.access_token) {
+    const res = NextResponse.json({ connected: false });
+    res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.headers.set("Pragma", "no-cache");
+    res.headers.set("Expires", "0");
+    return res;
+  }
 
-  // Validate token against Notion (handles revoked/removed connection)
   try {
+    // Validate that the token still works (handles revoke/remove)
     const resp = await fetch("https://api.notion.com/v1/users/me", {
       headers: {
         Authorization: `Bearer ${tok.access_token}`,
         "Notion-Version": "2022-06-28",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
       },
-      cache: "no-store"
+      cache: "no-store",
     });
-    return NextResponse.json({ connected: resp.ok });
+
+    const res = NextResponse.json({
+      connected: resp.ok,
+      source: tokBySid ? "sid" : "latest", // handy for debugging
+    });
+    res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.headers.set("Pragma", "no-cache");
+    res.headers.set("Expires", "0");
+    return res;
   } catch {
-    return NextResponse.json({ connected: false });
+    const res = NextResponse.json({ connected: false });
+    res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.headers.set("Pragma", "no-cache");
+    res.headers.set("Expires", "0");
+    return res;
   }
 }

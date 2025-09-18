@@ -179,25 +179,45 @@ export default function Home() {
   }, []);
 
   function connect() {
-    setConnectErr(null);
-    setNotice(null);
-    // Open Notion OAuth in popup
-    window.open("/api/oauth/start", "notionAuth", "width=480,height=720");
-    // poll /api/me until connected (also adopts latest token into this session)
-    const t = setInterval(async () => {
-      try {
-        const d = await (await fetch("/api/me", { cache: "no-store" })).json();
-        if (d.connected) {
-          clearInterval(t);
-          setConnected(true);
-          if (d?.source) setSource(d.source);
-          await loadDbs();
-        }
-      } catch {
-        /* ignore */
+  setConnectErr(null);
+  setNotice(null);
+
+  const w = window.open("/api/oauth/start", "notionAuth", "width=480,height=720");
+
+  // Listen for the callback's message and close the popup
+  const onMsg = async (ev: MessageEvent) => {
+    if (!ev || !ev.data || ev.data.type !== "recurio:oauth-complete") return;
+    window.removeEventListener("message", onMsg);
+    try { if (w && !w.closed) w.close(); } catch {}
+    // adopt token & load DBs
+    const d = await (await fetch("/api/me", { cache: "no-store" })).json();
+    setConnected(!!d.connected);
+    if (d?.source) setSource(d.source);
+    if (d.connected) await loadDbs();
+  };
+  window.addEventListener("message", onMsg);
+
+  // Fallback polling in case postMessage is blocked
+  const t = setInterval(async () => {
+    try {
+      const d = await (await fetch("/api/me", { cache: "no-store" })).json();
+      if (d.connected) {
+        clearInterval(t);
+        window.removeEventListener("message", onMsg);
+        try { if (w && !w.closed) w.close(); } catch {}
+        setConnected(true);
+        if (d?.source) setSource(d.source);
+        await loadDbs();
       }
-    }, 1500);
-  }
+    } catch {}
+  }, 1500);
+
+  // Safety cleanup after 3 minutes
+  setTimeout(() => {
+    clearInterval(t);
+    window.removeEventListener("message", onMsg);
+  }, 3 * 60 * 1000);
+}
 
   async function disconnect() {
     setConnectErr(null);

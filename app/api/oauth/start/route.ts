@@ -8,7 +8,7 @@ import { nanoid } from "nanoid";
 
 export async function GET(req: Request) {
   const clientId = process.env.NOTION_CLIENT_ID!;
-  // IMPORTANT: use the current request origin so cookies & callback are same-site
+  // Use the real request origin so cookies + callback are same-site
   const origin = new URL(req.url).origin;
   const redirectUri = `${origin}/api/oauth/callback`;
 
@@ -27,9 +27,9 @@ export async function GET(req: Request) {
   const url = `https://api.notion.com/v1/oauth/authorize?${params.toString()}`;
   const res = noStoreRedirect(url);
 
-  // Set cookies on THIS origin
+  // httpOnly cookies on THIS origin
   res.cookies.set({ name: "oauth_state", value: state, httpOnly: true, sameSite: "lax", path: "/" });
-  res.cookies.set({ name: "sid", value: sid, httpOnly: true, sameSite: "lax", path: "/" });
+  res.cookies.set({ name: "sid", value: sid,   httpOnly: true, sameSite: "lax", path: "/" });
 
   return res;
 }

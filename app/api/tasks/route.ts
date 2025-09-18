@@ -2,8 +2,8 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { NextResponse } from "next/server";
-import { cookies as getCookies } from "next/headers";
+import { cookies } from "next/headers";
+import { noStoreJson } from "../_http";
 import { redisGet, notionClient, ensureManagedContainers, getWorkspaceIdFromToken } from "../_utils";
 
 function isDoneLocal(page: any, doneProp: string | null, statusProp: string | null) {
@@ -18,13 +18,11 @@ function isDoneLocal(page: any, doneProp: string | null, statusProp: string | nu
 export async function GET(req: Request) {
   const u = new URL(req.url);
   const dbId = u.searchParams.get("db");
-  if (!dbId) return NextResponse.json({ tasks: [], meta: {} });
+  if (!dbId) return noStoreJson({ tasks: [], meta: {} });
 
-  // per-session token
-  const store = await getCookies();
-  const sid = store.get("sid")?.value || null;
+  const sid = cookies().get("sid")?.value || null;
   const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
-  if (!tok?.access_token) return NextResponse.json({ tasks: [], meta: {} });
+  if (!tok?.access_token) return noStoreJson({ tasks: [], meta: {} }, 401);
 
   const notion = notionClient(tok.access_token);
 
@@ -37,7 +35,7 @@ export async function GET(req: Request) {
   const statusProp = Object.keys(props).find(k => props[k].type === "status") || null;
 
   // Build filter: upcoming OR overdue (last 14d) OR (no due & created last 14d)
-  const todayStr  = new Date().toISOString().slice(0,10); // YYYY-MM-DD
+  const todayStr  = new Date().toISOString().slice(0,10);
   const past14Str = new Date(Date.now() - 14*24*60*60*1000).toISOString().slice(0,10);
   const recentIso = new Date(Date.now() - 14*24*60*60*1000).toISOString();
 
@@ -45,14 +43,11 @@ export async function GET(req: Request) {
   if (dueProp) {
     filter = {
       or: [
-        // Upcoming (today or later)
         { property: dueProp, date: { on_or_after: todayStr } },
-        // Overdue within last 14 days (we’ll still filter out "done" server-side)
         { and: [
           { property: dueProp, date: { on_or_after: past14Str } },
           { property: dueProp, date: { before: todayStr } }
         ]},
-        // No due-date, but recently created (last 14d)
         { and: [
           { property: dueProp, date: { is_empty: true } },
           { timestamp: "created_time", created_time: { on_or_after: recentIso } }
@@ -60,7 +55,6 @@ export async function GET(req: Request) {
       ]
     };
   } else {
-    // No Date property at all → just show recently created
     filter = { timestamp: "created_time", created_time: { on_or_after: recentIso } };
   }
 
@@ -103,12 +97,12 @@ export async function GET(req: Request) {
 
   // Hide overdue older than 14d or any overdue that is done
   const tasks = tasksRaw.filter((t: any) => {
-    if (!t.due) return true; // recently created no-due tasks already filtered by created_time
+    if (!t.due) return true;
     const d = t.due.slice(0,10);
-    if (d >= todayStr) return true;             // upcoming
-    if (d < past14Str) return false;            // too old
-    return !t.done;                              // overdue in window & NOT done
+    if (d >= todayStr) return true;   // upcoming
+    if (d < past14Str) return false;  // too old
+    return !t.done;                    // overdue window & NOT done
   });
 
-  return NextResponse.json({ tasks, meta: { titleProp, dueProp, doneProp, statusProp } });
+  return noStoreJson({ tasks, meta: { titleProp, dueProp, doneProp, statusProp } });
 }

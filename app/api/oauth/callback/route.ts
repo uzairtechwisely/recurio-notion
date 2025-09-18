@@ -1,21 +1,25 @@
 import { NextResponse } from "next/server";
 import { cookies as getCookies } from "next/headers";
 import { Client } from "@notionhq/client";
-import { redisSet } from "../../_utils";
+import { redisGet, redisSet } from "../../_utils";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const code = searchParams.get("code");
   const state = searchParams.get("state");
 
-  const store = await getCookies();
-  const oldState = store.get("oauth_state")?.value;
-  const sid = store.get("sid")?.value;
-
-  if (!code || !state || state !== oldState || !sid) {
+  if (!code || !state) {
     return new NextResponse("Bad OAuth state", { status: 400 });
   }
 
+  // Look up sid we saved at /oauth/start
+  const oauthRec = await redisGet<{ sid: string }>(`oauth:${state}`);
+  const sid = oauthRec?.sid;
+  if (!sid) {
+    return new NextResponse("Bad OAuth state", { status: 400 });
+  }
+
+  // Exchange code for token
   const tokenRes = await fetch("https://api.notion.com/v1/oauth/token", {
     method: "POST",
     headers: {
@@ -38,14 +42,32 @@ export async function GET(req: Request) {
     return new NextResponse("OAuth failed", { status: 400 });
   }
 
+  // Persist tokens
   await redisSet(`tok:${sid}`, tok);
-  await redisSet("tok:latest", tok); // allow worker/cron to use a token
+  await redisSet("tok:latest", tok); // used by worker/iframe
 
-  // Optional: create the sidebar panel page with an embed
+  // Ensure browser has sid for subsequent UI calls
+  const res = new NextResponse(
+    `<!doctype html><title>Connected</title>
+     <script>
+       if (window.opener) { window.opener.location = '/'; window.close(); }
+       else { location = '/'; }
+     </script>`,
+    { headers: { "Content-Type": "text/html" } }
+  );
+
+  res.cookies.set({
+    name: "sid",
+    value: sid,
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/"
+  });
+
+  // (Optional) create the panel page
   try {
     const notion = new Client({ auth: (tok as any).access_token });
     await notion.pages.create({
-      // Cast to any because Notion SDK types don't include the "workspace" parent shape
       parent: { type: "workspace", workspace: true } as any,
       icon: { type: "emoji", emoji: "🔁" },
       properties: {
@@ -55,14 +77,7 @@ export async function GET(req: Request) {
         { object: "block", type: "embed", embed: { url: `${process.env.APP_URL}` } },
       ],
     } as any);
-  } catch {
-    // ignore page-creation errors for now
-  }
+  } catch { /* ignore */ }
 
-  const html = `<!doctype html><title>Connected</title>
-  <script>
-    if (window.opener) { window.opener.location = '/'; window.close(); }
-    else { location = '/'; }
-  </script>`;
-  return new NextResponse(html, { headers: { "Content-Type": "text/html" } });
+  return res;
 }

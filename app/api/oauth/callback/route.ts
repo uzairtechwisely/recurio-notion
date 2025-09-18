@@ -39,6 +39,7 @@ export async function GET(req: Request) {
   }
 
   await redisSet(`tok:${sid}`, tok);
+  await redisSet("tok:latest", tok); // allow worker/cron to use a token
 
   // Optional: create the sidebar panel page with an embed
   try {

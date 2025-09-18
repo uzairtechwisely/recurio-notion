@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { cookies } from "next/headers";
+import { cookies as getCookies } from "next/headers";
 import { noStoreJson } from "../_http";
 import { redisGet, notionClient, ensureManagedContainers, getWorkspaceIdFromToken } from "../_utils";
 
@@ -20,7 +20,7 @@ export async function GET(req: Request) {
   const dbId = u.searchParams.get("db");
   if (!dbId) return noStoreJson({ tasks: [], meta: {} });
 
-  const sid = cookies().get("sid")?.value || null;
+  const sid = (await getCookies()).get("sid")?.value;
   const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
   if (!tok?.access_token) return noStoreJson({ tasks: [], meta: {} }, 401);
 

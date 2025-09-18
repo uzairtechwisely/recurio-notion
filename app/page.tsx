@@ -28,6 +28,27 @@ export default function Home() {
     setNotice("Failed to disconnect.");
   }
 }
+    async function clearRules() {
+  setNotice(null);
+  if (!confirm("Archive all rule rows in the managed Rules DB? (This is reversible in Notion)")) return;
+  const r = await fetch("/api/admin/reset-managed", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "archive" })
+  });
+  const j = await r.json().catch(() => ({}));
+  if (r.ok && j.ok) setNotice(`Archived ${j.archived} rule row(s).`);
+  else setNotice(j.error || "Failed to archive rules.");
+}
+
+async function resetManaged() {
+  setNotice(null);
+  if (!confirm("Create a brand-new managed page & Rules DB (old DB will be renamed and kept)?")) return;
+  const r = await fetch("/api/admin/reset-managed", { method: "POST" });
+  const j = await r.json().catch(() => ({}));
+  if (r.ok && j.ok) setNotice("Fresh managed assets created.");
+  else setNotice(j.error || "Failed to recreate managed assets.");
+}
 
 async function resetManaged() {
   setNotice(null);
@@ -150,6 +171,11 @@ async function resetManaged() {
     <button onClick={disconnect}>Disconnect</button>
     <button onClick={resetManaged}>Reset managed</button>
   </div>
+</div>
+      <div style={{marginLeft:"auto", display:"flex", gap:8}}>
+  <button onClick={disconnect}>Disconnect</button>
+  <button onClick={clearRules}>Clear rules</button>
+  <button onClick={resetManaged}>Reset managed</button>
 </div>
 
       {/* Notice / errors */}

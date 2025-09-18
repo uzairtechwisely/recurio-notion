@@ -7,7 +7,7 @@ import { noStoreJson } from "../_http";
 import { redisGet, notionClient } from "../_utils";
 
 export async function GET() {
-  const sid = (await getCookies()).get("sid")?.value;
+  const sid = (await getCookies()).get("sid")?.value || null;
   const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
   if (!tok?.access_token) return noStoreJson({ databases: [] }, 401);
 

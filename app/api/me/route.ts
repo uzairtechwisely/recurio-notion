@@ -3,11 +3,12 @@ import { cookies as getCookies } from "next/headers";
 import { redisGet } from "../_utils";
 
 export async function GET() {
-  const store = await getCookies();                 // ← await
+  const store = await getCookies();
   const sid = store.get("sid")?.value || null;
-  if (!sid) return NextResponse.json({ connected: false });
 
-  const tok = await redisGet(`tok:${sid}`);
-  const connected = Boolean((tok as any)?.access_token);
-  return NextResponse.json({ connected });
+  const tokBySid = sid ? await redisGet<any>(`tok:${sid}`) : null;
+  const tokLatest = await redisGet<any>("tok:latest");     // ← fallback for iframes
+  const tok = tokBySid || tokLatest;
+
+  return NextResponse.json({ connected: !!tok?.access_token });
 }

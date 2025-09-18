@@ -16,12 +16,13 @@ export async function POST(req: Request) {
   const mode = (body.mode || "").trim(); // "archive" or ""
 
   try {
-    const workspaceId = getWorkspaceIdFromToken(tok) || tok.workspace_id;
+    const workspaceId = (await getWorkspaceIdFromToken(tok)) || tok.workspace_id;
+    if (!workspaceId) return noStoreJson({ ok: false, error: "no workspace id" }, 400);
+
     const { dbId, pageId, panelId } = await ensureManagedContainers(notion, workspaceId);
     if (!dbId || !pageId) return noStoreJson({ ok: false, error: "ensure failed" }, 500);
 
     if (mode === "archive") {
-      // Archive all active rule rows (soft delete)
       const rr: any = await notion.databases.query({
         database_id: dbId,
         filter: { property: "Active", checkbox: { equals: true } },

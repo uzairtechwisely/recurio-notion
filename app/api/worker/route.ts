@@ -1,6 +1,27 @@
 import { NextResponse } from "next/server";
 import { notionClient, redisGet, buildRRule, ensureManagedContainers, getWorkspaceIdFromToken } from "../_utils";
 
+function detectProps(page: any) {
+  let titleProp = "Name", dateProp: string | null = null, doneProp: string | null = null, statusProp: string | null = null;
+  for (const k of Object.keys(page.properties || {})) {
+    const t = page.properties[k]?.type;
+    if (t === "title") titleProp = k;
+    if (t === "date" && !dateProp) dateProp = k;
+    if (t === "checkbox" && !doneProp) doneProp = k;
+    if (t === "status" && !statusProp) statusProp = k;
+  }
+  return { titleProp, dateProp, doneProp, statusProp };
+}
+
+function isDone(page: any, doneProp: string | null, statusProp: string | null) {
+  if (doneProp) return !!page.properties?.[doneProp]?.checkbox;
+  if (statusProp) {
+    const name = page.properties?.[statusProp]?.status?.name?.toLowerCase?.() || "";
+    return ["done","completed","complete","finished","closed"].includes(name);
+  }
+  return false;
+}
+
 export async function GET(req: Request) {
   const tok = await redisGet<any>("tok:latest");
   if (!tok?.access_token) return NextResponse.json({ processed:0, created:0, details:[] });
@@ -9,7 +30,7 @@ export async function GET(req: Request) {
   const workspaceId = await getWorkspaceIdFromToken(tok) || "default";
   const { dbId: rulesDbId } = await ensureManagedContainers(notion, workspaceId);
 
-  // 1) get active rules
+  // pull active rules
   const rules:any = await notion.databases.query({
     database_id: rulesDbId,
     filter: { property: "Active", checkbox: { equals: true } },
@@ -17,15 +38,14 @@ export async function GET(req: Request) {
   });
 
   let processed = 0, created = 0;
-  const details: any[] = [];
+  const details:any[] = [];
 
   for (const r of rules.results) {
     const p = r.properties as any;
-    const taskRel = p["Task Page"]?.relation || [];
-    if (!taskRel.length) { processed++; continue; }
-    const taskId = taskRel[0].id;
+    const taskId = p["Task Page ID"]?.rich_text?.[0]?.plain_text;
+    if (!taskId) { processed++; continue; }
 
-    // Pull rule config
+    // read rule config
     const cfg = {
       rule: p["Rule"]?.select?.name || "Weekly",
       byday: (p["By Day"]?.multi_select || []).map((x:any)=>x.name),
@@ -35,16 +55,18 @@ export async function GET(req: Request) {
       custom: (p["Custom RRULE"]?.rich_text?.[0]?.plain_text || "")
     };
 
-    // Fetch task page
+    // fetch current task
     const page:any = await notion.pages.retrieve({ page_id: taskId }).catch(()=>null);
     if (!page) { processed++; continue; }
 
     const parentDb = page.parent?.database_id;
-    const done = page.properties?.Done?.checkbox;
-    const due = page.properties?.Due?.date?.start;
-    if (!parentDb || !done || !due) { processed++; continue; }
+    const { titleProp, dateProp, doneProp, statusProp } = detectProps(page);
+    const due = dateProp ? page.properties?.[dateProp]?.date?.start : null;
+    const done = isDone(page, doneProp, statusProp);
 
-    // Compute next date
+    if (!parentDb || !due || !done) { processed++; continue; }
+
+    // compute next date
     const rule = buildRRule(cfg);
     const next = rule.after(new Date(due), true);
     if (!next) { processed++; continue; }
@@ -52,26 +74,31 @@ export async function GET(req: Request) {
     // avoid duplicate
     const dup:any = await notion.databases.query({
       database_id: parentDb,
-      filter: { property: "Due", date: { equals: next.toISOString() } },
+      filter: { property: dateProp!, date: { equals: next.toISOString() } },
       page_size: 1
     });
     if (dup.results?.length) { processed++; continue; }
 
-    // Create next task
-    const title = page.properties?.Name?.title?.[0]?.plain_text || "Untitled";
+    const title = page.properties?.[titleProp]?.title?.[0]?.plain_text || "Untitled";
+
+    // create next task with same prop names
+    const props:any = {
+      [titleProp]: { title: [{ text: { content: title } }] }
+    };
+    if (dateProp) props[dateProp] = { date: { start: next.toISOString() } };
+    if (doneProp) props[doneProp] = { checkbox: false };
+
     const newTask:any = await notion.pages.create({
       parent: { database_id: parentDb },
-      properties: {
-        Name: { title: [{ text: { content: title } }] },
-        Done: { checkbox: false },
-        Due: { date: { start: next.toISOString() } }
-      }
+      properties: props
     });
 
-    // **Move** the rule to point at the new task (so the series continues)
+    // move rule forward by updating Task Page ID
     await notion.pages.update({
       page_id: r.id,
-      properties: { "Task Page": { relation: [{ id: newTask.id }] } }
+      properties: {
+        "Task Page ID": { rich_text: [{ type: "text", text: { content: newTask.id } }] }
+      }
     });
 
     created++; processed++;

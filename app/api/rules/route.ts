@@ -2,55 +2,64 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { NextResponse } from "next/server";
-import { cookies as getCookies } from "next/headers";
-import { notionClient, redisGet, ensureManagedContainers, getWorkspaceIdFromToken } from "../_utils";
+import { cookies } from "next/headers";
+import { noStoreJson } from "../_http";
+import { redisGet, notionClient, ensureManagedContainers, getWorkspaceIdFromToken } from "../_utils";
 
 export async function POST(req: Request) {
-  try {
-    const store = await getCookies();
-    const sid = store.get("sid")?.value;
-    const tok = (sid && await redisGet<any>(`tok:${sid}`)) || await redisGet<any>("tok:latest");
-    if (!tok?.access_token) return NextResponse.json({ ok:false, error:"Not connected" }, { status:401 });
+  const sid = cookies().get("sid")?.value || null;
+  const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
+  if (!tok?.access_token) return noStoreJson({ ok:false, error:"Not connected" }, 401);
 
-    const body = await req.json();
-    const { taskPageId, dbId, rule, byday, interval, time, tz, custom } = body || {};
-    if (!taskPageId || !rule) return NextResponse.json({ ok:false, error:"Missing fields" }, { status:400 });
+  const notion = notionClient(tok.access_token);
+  const workspaceId = await getWorkspaceIdFromToken(tok) || "default";
+  const { dbId: rulesDbId } = await ensureManagedContainers(notion, workspaceId);
 
-    const notion = notionClient(tok.access_token);
-    const workspaceId = await getWorkspaceIdFromToken(tok) || "default";
-    const { dbId: rulesDbId } = await ensureManagedContainers(notion, workspaceId);
+  const body = await req.json().catch(() => ({}));
+  const taskPageId = String(body.taskPageId || "").trim();
+  const ruleName = `Rule for ${taskPageId.slice(0, 6)}`;
 
-    // find existing by Task Page ID
-    const existing:any = await notion.databases.query({
-      database_id: rulesDbId,
-      filter: { property: "Task Page ID", rich_text: { equals: taskPageId } },
-      page_size: 1
-    });
+  const rule = String(body.rule || "Weekly");
+  const byday = String(body.byday || "")
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+  const interval = Number(body.interval || 1);
+  const time = String(body.time || "");
+  const tz = String(body.tz || "");
+  const custom = String(body.custom || "");
 
-    const props:any = {
-      "Rule Name": { title: [{ text: { content: `Rule for ${taskPageId.slice(0,6)}` } }] },
-      "Task Page ID": { rich_text: [{ type: "text", text: { content: taskPageId } }] },
-      "Rule": { select: { name: rule } },
-      "By Day": { multi_select: (byday || "").split(",").map((s:string)=>s.trim()).filter(Boolean).map((n:string)=>({ name:n })) },
-      "Interval": { number: Number(interval || 1) },
-      "Time": { rich_text: [{ type: "text", text: { content: time || "" } }] },
-      "Timezone": { rich_text: [{ type: "text", text: { content: tz || "" } }] },
-      "Custom RRULE": { rich_text: [{ type: "text", text: { content: custom || "" } }] },
-      "Active": { checkbox: true }
-    };
+  if (!taskPageId) return noStoreJson({ ok:false, error:"Missing taskPageId" }, 400);
 
-    if (existing.results?.length) {
-      const pageId = existing.results[0].id;
-      await notion.pages.update({ page_id: pageId, properties: props });
-      return NextResponse.json({ ok:true, updated:true, rulesDbId });
-    } else {
-      await notion.pages.create({ parent: { database_id: rulesDbId }, properties: props });
-      return NextResponse.json({ ok:true, created:true, rulesDbId });
-    }
-  } catch (e: any) {
-    // surface Notion error message if present
-    const msg = e?.body?.message || e?.message || "Unknown error";
-    return NextResponse.json({ ok:false, error: msg }, { status: 500 });
+  // Upsert: find active rule for this page id
+  const existing:any = await notion.databases.query({
+    database_id: rulesDbId,
+    filter: {
+      and: [
+        { property: "Active", checkbox: { equals: true } },
+        { property: "Task Page ID", rich_text: { equals: taskPageId } }
+      ]
+    },
+    page_size: 1
+  });
+
+  const props: any = {
+    "Rule Name": { title: [{ text: { content: ruleName } }] },
+    "Task Page ID": { rich_text: [{ text: { content: taskPageId } }] },
+    "Rule": { select: { name: rule } },
+    "By Day": { multi_select: byday.map((n: string) => ({ name: n })) },
+    "Interval": { number: interval },
+    "Time": { rich_text: time ? [{ text: { content: time } }] : [] },
+    "Timezone": { rich_text: tz ? [{ text: { content: tz } }] : [] },
+    "Custom RRULE": { rich_text: custom ? [{ text: { content: custom } }] : [] },
+    "Active": { checkbox: true },
+  };
+
+  if (existing.results?.length) {
+    await notion.pages.update({ page_id: existing.results[0].id, properties: props });
+    return noStoreJson({ ok:true, updated:true });
+  } else {
+    await notion.pages.create({ parent: { database_id: rulesDbId }, properties: props });
+    return noStoreJson({ ok:true, created:true });
   }
 }

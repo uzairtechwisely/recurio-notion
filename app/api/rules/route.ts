@@ -1,4 +1,4 @@
-// app/api/tasks/route.ts
+// app/api/rules/route.ts
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
@@ -7,129 +7,63 @@ import { noStoreJson } from "../_http";
 import { notionClient, ensureManagedContainers, getWorkspaceIdFromToken } from "../_utils";
 import { adoptTokenForThisSession } from "../_session";
 
-function pickTitle(props: any): string {
-  for (const k of Object.keys(props || {})) {
-    const p = props[k];
-    if (p?.type === "title") {
-      const arr = p?.title || [];
-      return arr.map((t: any) => t?.plain_text || t?.text?.content || "").join("").trim() || "Untitled";
-    }
-  }
-  return "Untitled";
-}
-function pickFirstOfType(props: any, type: string) {
-  for (const k of Object.keys(props || {})) {
-    const p = props[k];
-    if (p?.type === type) return { key: k, prop: p };
-  }
-  return { key: null, prop: null };
-}
-function isDone(props: any): boolean {
-  // Prefer a checkbox
-  for (const k of Object.keys(props || {})) {
-    const p = props[k];
-    if (p?.type === "checkbox") return !!p?.checkbox;
-  }
-  // Fallback: Status with name "Done"
-  for (const k of Object.keys(props || {})) {
-    const p = props[k];
-    if (p?.type === "status") {
-      const name = p?.status?.name || "";
-      if (String(name).toLowerCase() === "done") return true;
-    }
-  }
-  return false;
-}
-function getDueISO(props: any): string | null {
-  const { key, prop } = pickFirstOfType(props, "date");
-  if (!key || !prop) return null;
-  const v = prop?.date;
-  if (!v) return null;
-  // Prefer end or start; preserve date-only vs datetime
-  return v?.end || v?.start || null;
-}
-function withinLastDays(dateISO: string, days: number): boolean {
-  const d = new Date(dateISO);
-  if (Number.isNaN(+d)) return false;
-  const now = Date.now();
-  return now - d.getTime() <= days * 86400000;
-}
-
-export async function GET(req: Request) {
+export async function POST(req: Request) {
   const { tok } = await adoptTokenForThisSession();
-  if (!tok?.access_token) return noStoreJson({ tasks: [], error: "no token" }, 401);
+  if (!tok?.access_token) return noStoreJson({ ok: false, error: "no token" }, 401);
   const notion = notionClient(tok.access_token);
 
-  const u = new URL(req.url);
-  const dbId = u.searchParams.get("db");
-  if (!dbId) return noStoreJson({ tasks: [], error: "missing db param" }, 400);
+  const body = await req.json().catch(() => ({} as any));
+  const taskPageId = (body.taskPageId || "").trim();
+  const rule = (body.rule || "").trim() || "Weekly";
+  const byday = String(body.byday || "").split(",").map((s: string) => s.trim().toUpperCase()).filter(Boolean);
+  const interval = Number(body.interval || 1);
+  const time = (body.time || "").trim();
+  const tz = (body.tz || "").trim();
+  const custom = (body.custom || "").trim();
+
+  if (!taskPageId) return noStoreJson({ ok: false, error: "missing taskPageId" }, 400);
 
   try {
-    // Query tasks (recent & upcoming)
-    const q: any = await notion.databases.query({
-      database_id: dbId,
-      page_size: 50,
-      sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
+    const workspaceId = (await getWorkspaceIdFromToken(tok)) || tok.workspace_id;
+    if (!workspaceId) return noStoreJson({ ok: false, error: "no workspace id" }, 400);
+
+    const { dbId: rulesDb } = await ensureManagedContainers(notion, workspaceId);
+    if (!rulesDb) return noStoreJson({ ok: false, error: "rules db missing" }, 500);
+
+    const task: any = await notion.pages.retrieve({ page_id: taskPageId });
+    const titleProp = Object.values(task.properties || {}).find((p: any) => p?.type === "title") as any;
+    const title = (titleProp?.title || []).map((t: any) => t?.plain_text || t?.text?.content || "").join("").trim() || "Task";
+
+    const existing: any = await notion.databases.query({
+      database_id: rulesDb,
+      filter: { property: "Task Page ID", rich_text: { equals: taskPageId } },
+      page_size: 1,
     });
 
-    const pages: any[] = q?.results || [];
+    const props: any = {
+      "Rule Name": { title: [{ text: { content: title } }] },
+      "Task Page ID": { rich_text: [{ type: "text", text: { content: taskPageId } }] },
+      "Rule": { select: { name: custom ? "Custom" : rule } },
+      "By Day": { multi_select: byday.map((n: string) => ({ name: n })) },
+      "Interval": { number: Number.isFinite(interval) ? interval : 1 },
+      "Time": { rich_text: time ? [{ type: "text", text: { content: time } }] : [] },
+      "Timezone": { rich_text: tz ? [{ type: "text", text: { content: tz } }] : [] },
+      "Custom RRULE": { rich_text: custom ? [{ type: "text", text: { content: custom } }] : [] },
+      "Active": { checkbox: true },
+    };
 
-    // Build a set of task IDs that have rules, to set hasRule flag
-    const workspaceId = getWorkspaceIdFromToken(tok) || tok.workspace_id;
-    let ruleTaskIds = new Set<string>();
-    try {
-      if (workspaceId) {
-        const { dbId: rulesDb } = await ensureManagedContainers(notion, workspaceId);
-        if (rulesDb) {
-          const rr: any = await notion.databases.query({
-            database_id: rulesDb,
-            filter: { property: "Active", checkbox: { equals: true } },
-            page_size: 100,
-          });
-          for (const r of rr?.results || []) {
-            const props = (r as any)?.properties || {};
-            const txt = props?.["Task Page ID"]?.rich_text || [];
-            const id = (txt[0]?.plain_text || txt[0]?.text?.content || "").trim();
-            if (id) ruleTaskIds.add(id);
-          }
-        }
-      }
-    } catch { /* ignore rule lookup errors */ }
-
-    const now = new Date();
-    const out = pages.map((pg: any) => {
-      const props = pg?.properties || {};
-      const due = getDueISO(props);
-      const done = isDone(props);
-      const title = pickTitle(props);
-      const hasRule = ruleTaskIds.has(pg.id);
-
-      let overdue = false;
-      if (due && !done) {
-        const d = new Date(due);
-        if (+d < +now && withinLastDays(due, 14)) overdue = true;
-      }
-
-      return {
-        id: pg.id,
-        name: title,
-        due: due || null,
-        done,
-        parentDb: dbId,
-        hasRule,
-        overdue,
-      };
-    })
-    // Keep list light: overdue (<=14d), upcoming (>= now), or recently edited
-    .filter(t => {
-      if (t.overdue) return true;
-      if (!t.due) return true; // no due: still show (user may add a rule)
-      const d = new Date(t.due);
-      return +d >= Date.now() - 6 * 3600_000; // due from last 6h or future
-    });
-
-    return noStoreJson({ tasks: out });
+    if (existing.results?.length) {
+      const pageId = existing.results[0].id;
+      await notion.pages.update({ page_id: pageId, properties: props });
+      return noStoreJson({ ok: true, updated: true, pageId });
+    } else {
+      const created: any = await notion.pages.create({
+        parent: { database_id: rulesDb },
+        properties: props,
+      });
+      return noStoreJson({ ok: true, created: true, pageId: created.id });
+    }
   } catch (e: any) {
-    return noStoreJson({ tasks: [], error: e?.message || "Could not load tasks" }, 500);
+    return noStoreJson({ ok: false, error: e?.message || "failed to save rule" }, 500);
   }
 }

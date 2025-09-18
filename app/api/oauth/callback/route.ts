@@ -9,15 +9,13 @@ import { redisSet } from "../../_utils";
 
 export async function GET(req: Request) {
   const u = new URL(req.url);
-  const base = process.env.APP_URL || u.origin;               // <— single source of truth
+  const base = process.env.APP_URL || u.origin;
   const code = u.searchParams.get("code");
   const inboundState = u.searchParams.get("state");
 
   const jar = await getCookies();
   const stateCookie = jar.get("oauth_state")?.value || null;
   let sid = jar.get("sid")?.value || null;
-
-  // On some iOS/incognito flows the cookie may be missing; mint one so adoption can work.
   if (!sid) sid = Math.random().toString(36).slice(2);
 
   if (!code || !inboundState || !stateCookie || inboundState !== stateCookie) {
@@ -37,11 +35,7 @@ export async function GET(req: Request) {
       Authorization: "Basic " + Buffer.from(`${clientId}:${clientSecret}`).toString("base64"),
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: redirectUri, // must EXACTLY match Notion's allowed URI
-    }),
+    body: JSON.stringify({ grant_type: "authorization_code", code, redirect_uri: redirectUri }),
     cache: "no-store",
   });
 
@@ -54,10 +48,8 @@ export async function GET(req: Request) {
   }
 
   const tok = await tokenRes.json();
-  await redisSet(`tok:${sid}`, tok);
-  await redisSet("tok:latest", tok);
+  await redisSet(`tok:${sid}`, tok);        // <-- per-session only (no global latest!)
 
-  // Notify opener, try to close popup, and fall back to redirect to the app
   const html = `<!doctype html><meta charset="utf-8" />
 <script>
   try { window.opener && window.opener.postMessage({ type: 'recurio:oauth-complete' }, '*'); } catch(e) {}
@@ -69,7 +61,6 @@ export async function GET(req: Request) {
   const res = new NextResponse(html, {
     headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
   });
-  // Clear state cookie; refresh sid so the opener tab can adopt if needed
   res.cookies.set({ name: "oauth_state", value: "", path: "/", maxAge: 0 });
   res.cookies.set({ name: "sid", value: sid, httpOnly: true, sameSite: "lax", path: "/" });
   return res;

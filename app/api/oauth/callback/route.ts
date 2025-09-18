@@ -8,7 +8,7 @@ export async function GET(req: Request) {
   const code = searchParams.get("code");
   const state = searchParams.get("state");
 
-  const store = await getCookies();                 // ← await
+  const store = await getCookies();
   const oldState = store.get("oauth_state")?.value;
   const sid = store.get("sid")?.value;
 
@@ -21,15 +21,16 @@ export async function GET(req: Request) {
     headers: {
       "Content-Type": "application/json",
       "Authorization":
-        "Basic " + Buffer.from(
+        "Basic " +
+        Buffer.from(
           `${process.env.NOTION_CLIENT_ID}:${process.env.NOTION_CLIENT_SECRET}`
-        ).toString("base64")
+        ).toString("base64"),
     },
     body: JSON.stringify({
       grant_type: "authorization_code",
       code,
-      redirect_uri: `${process.env.APP_URL}/api/oauth/callback`
-    })
+      redirect_uri: `${process.env.APP_URL}/api/oauth/callback`,
+    }),
   });
 
   const tok = await tokenRes.json();
@@ -39,16 +40,23 @@ export async function GET(req: Request) {
 
   await redisSet(`tok:${sid}`, tok);
 
-  // (Optional) create the embedded panel page
+  // Optional: create the sidebar panel page with an embed
   try {
     const notion = new Client({ auth: (tok as any).access_token });
     await notion.pages.create({
-      parent: { type: "workspace", workspace: true },
+      // Cast to any because Notion SDK types don't include the "workspace" parent shape
+      parent: { type: "workspace", workspace: true } as any,
       icon: { type: "emoji", emoji: "🔁" },
-      properties: { title: { title: [{ text: { content: "Techwisely Recurrence Panel" } }] } },
-      children: [{ object: "block", type: "embed", embed: { url: `${process.env.APP_URL}` } }]
-    });
-  } catch {}
+      properties: {
+        title: { title: [{ text: { content: "Techwisely Recurrence Panel" } }] },
+      },
+      children: [
+        { object: "block", type: "embed", embed: { url: `${process.env.APP_URL}` } },
+      ],
+    } as any);
+  } catch {
+    // ignore page-creation errors for now
+  }
 
   const html = `<!doctype html><title>Connected</title>
   <script>

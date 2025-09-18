@@ -7,7 +7,7 @@ import { NextResponse } from "next/server";
 import { redisGet } from "../_utils";
 
 export async function GET() {
-  const sid = (await getCookies()).get("sid")?.value;
+  const sid = (await getCookies()).get("sid")?.value || null;
 
   // Prefer per-session token, but allow fallback for embedded reconnect UX
   const tokBySid = sid ? await redisGet<any>(`tok:${sid}`) : null;

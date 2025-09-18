@@ -1,10 +1,19 @@
 import { NextResponse } from "next/server";
 import { nanoid } from "nanoid";
+import { cookies as getCookies } from "next/headers";
+import { redisSet } from "../../_utils";
 
 export async function GET() {
   const clientId = process.env.NOTION_CLIENT_ID!;
   const redirectUri = encodeURIComponent(`${process.env.APP_URL}/api/oauth/callback`);
+
+  const store = await getCookies();
+  const existingSid = store.get("sid")?.value;
+  const sid = existingSid || nanoid();
   const state = nanoid();
+
+  // Save the sid server-side, keyed by state (no cookie dependency)
+  await redisSet(`oauth:${state}`, { sid, ts: Date.now() });
 
   const url =
     `https://api.notion.com/v1/oauth/authorize` +
@@ -12,17 +21,10 @@ export async function GET() {
 
   const res = NextResponse.redirect(url);
 
-  // Use the single-options signature + lowercase sameSite
-  res.cookies.set({
-    name: "oauth_state",
-    value: state,
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/"
-  });
+  // Ensure the browser has a sid for UI calls (not required for OAuth correctness)
   res.cookies.set({
     name: "sid",
-    value: nanoid(),
+    value: sid,
     httpOnly: true,
     sameSite: "lax",
     path: "/"

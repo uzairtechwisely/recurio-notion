@@ -1,66 +1,135 @@
-import { adoptTokenForThisSession } from "../_session";   // or "../../_session"
+// app/api/tasks/route.ts
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { cookies as getCookies } from "next/headers";
 import { noStoreJson } from "../_http";
-import { redisGet, notionClient, ensureManagedContainers, getWorkspaceIdFromToken } from "../_utils";
+import { notionClient, ensureManagedContainers, getWorkspaceIdFromToken } from "../_utils";
+import { adoptTokenForThisSession } from "../_session";
 
-export async function POST(req: Request) {
-  const sid = (await getCookies()).get("sid")?.value || null;
-  const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
-  if (!tok?.access_token) return noStoreJson({ ok:false, error:"Not connected" }, 401);
+function pickTitle(props: any): string {
+  for (const k of Object.keys(props || {})) {
+    const p = props[k];
+    if (p?.type === "title") {
+      const arr = p?.title || [];
+      return arr.map((t: any) => t?.plain_text || t?.text?.content || "").join("").trim() || "Untitled";
+    }
+  }
+  return "Untitled";
+}
+function pickFirstOfType(props: any, type: string) {
+  for (const k of Object.keys(props || {})) {
+    const p = props[k];
+    if (p?.type === type) return { key: k, prop: p };
+  }
+  return { key: null, prop: null };
+}
+function isDone(props: any): boolean {
+  // Prefer a checkbox
+  for (const k of Object.keys(props || {})) {
+    const p = props[k];
+    if (p?.type === "checkbox") return !!p?.checkbox;
+  }
+  // Fallback: Status with name "Done"
+  for (const k of Object.keys(props || {})) {
+    const p = props[k];
+    if (p?.type === "status") {
+      const name = p?.status?.name || "";
+      if (String(name).toLowerCase() === "done") return true;
+    }
+  }
+  return false;
+}
+function getDueISO(props: any): string | null {
+  const { key, prop } = pickFirstOfType(props, "date");
+  if (!key || !prop) return null;
+  const v = prop?.date;
+  if (!v) return null;
+  // Prefer end or start; preserve date-only vs datetime
+  return v?.end || v?.start || null;
+}
+function withinLastDays(dateISO: string, days: number): boolean {
+  const d = new Date(dateISO);
+  if (Number.isNaN(+d)) return false;
+  const now = Date.now();
+  return now - d.getTime() <= days * 86400000;
+}
 
+export async function GET(req: Request) {
+  const { tok } = await adoptTokenForThisSession();
+  if (!tok?.access_token) return noStoreJson({ tasks: [], error: "no token" }, 401);
   const notion = notionClient(tok.access_token);
-  const workspaceId = await getWorkspaceIdFromToken(tok) || "default";
-  const { dbId: rulesDbId } = await ensureManagedContainers(notion, workspaceId);
 
-  const body = await req.json().catch(() => ({}));
-  const taskPageId = String(body.taskPageId || "").trim();
-  const ruleName = `Rule for ${taskPageId.slice(0, 6)}`;
+  const u = new URL(req.url);
+  const dbId = u.searchParams.get("db");
+  if (!dbId) return noStoreJson({ tasks: [], error: "missing db param" }, 400);
 
-  const rule = String(body.rule || "Weekly");
-  const byday = String(body.byday || "")
-    .split(",")
-    .map((s) => s.trim().toUpperCase())
-    .filter(Boolean);
-  const interval = Number(body.interval || 1);
-  const time = String(body.time || "");
-  const tz = String(body.tz || "");
-  const custom = String(body.custom || "");
+  try {
+    // Query tasks (recent & upcoming)
+    const q: any = await notion.databases.query({
+      database_id: dbId,
+      page_size: 50,
+      sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
+    });
 
-  if (!taskPageId) return noStoreJson({ ok:false, error:"Missing taskPageId" }, 400);
+    const pages: any[] = q?.results || [];
 
-  // Upsert: find active rule for this page id
-  const existing:any = await notion.databases.query({
-    database_id: rulesDbId,
-    filter: {
-      and: [
-        { property: "Active", checkbox: { equals: true } },
-        { property: "Task Page ID", rich_text: { equals: taskPageId } }
-      ]
-    },
-    page_size: 1
-  });
+    // Build a set of task IDs that have rules, to set hasRule flag
+    const workspaceId = getWorkspaceIdFromToken(tok) || tok.workspace_id;
+    let ruleTaskIds = new Set<string>();
+    try {
+      if (workspaceId) {
+        const { dbId: rulesDb } = await ensureManagedContainers(notion, workspaceId);
+        if (rulesDb) {
+          const rr: any = await notion.databases.query({
+            database_id: rulesDb,
+            filter: { property: "Active", checkbox: { equals: true } },
+            page_size: 100,
+          });
+          for (const r of rr?.results || []) {
+            const props = (r as any)?.properties || {};
+            const txt = props?.["Task Page ID"]?.rich_text || [];
+            const id = (txt[0]?.plain_text || txt[0]?.text?.content || "").trim();
+            if (id) ruleTaskIds.add(id);
+          }
+        }
+      }
+    } catch { /* ignore rule lookup errors */ }
 
-  const props: any = {
-    "Rule Name": { title: [{ text: { content: ruleName } }] },
-    "Task Page ID": { rich_text: [{ text: { content: taskPageId } }] },
-    "Rule": { select: { name: rule } },
-    "By Day": { multi_select: byday.map((n: string) => ({ name: n })) },
-    "Interval": { number: interval },
-    "Time": { rich_text: time ? [{ text: { content: time } }] : [] },
-    "Timezone": { rich_text: tz ? [{ text: { content: tz } }] : [] },
-    "Custom RRULE": { rich_text: custom ? [{ text: { content: custom } }] : [] },
-    "Active": { checkbox: true },
-  };
+    const now = new Date();
+    const out = pages.map((pg: any) => {
+      const props = pg?.properties || {};
+      const due = getDueISO(props);
+      const done = isDone(props);
+      const title = pickTitle(props);
+      const hasRule = ruleTaskIds.has(pg.id);
 
-  if (existing.results?.length) {
-    await notion.pages.update({ page_id: existing.results[0].id, properties: props });
-    return noStoreJson({ ok:true, updated:true });
-  } else {
-    await notion.pages.create({ parent: { database_id: rulesDbId }, properties: props });
-    return noStoreJson({ ok:true, created:true });
+      let overdue = false;
+      if (due && !done) {
+        const d = new Date(due);
+        if (+d < +now && withinLastDays(due, 14)) overdue = true;
+      }
+
+      return {
+        id: pg.id,
+        name: title,
+        due: due || null,
+        done,
+        parentDb: dbId,
+        hasRule,
+        overdue,
+      };
+    })
+    // Keep list light: overdue (<=14d), upcoming (>= now), or recently edited
+    .filter(t => {
+      if (t.overdue) return true;
+      if (!t.due) return true; // no due: still show (user may add a rule)
+      const d = new Date(t.due);
+      return +d >= Date.now() - 6 * 3600_000; // due from last 6h or future
+    });
+
+    return noStoreJson({ tasks: out });
+  } catch (e: any) {
+    return noStoreJson({ tasks: [], error: e?.message || "Could not load tasks" }, 500);
   }
 }

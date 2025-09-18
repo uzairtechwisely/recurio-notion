@@ -2,11 +2,10 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { NextResponse } from "next/server";
-import { cookies as getCookies } from "next/headers";
+import { cookies } from "next/headers";
+import { noStoreJson } from "../../_http";
 import {
-  redisGet, redisDel, notionClient,
-  ensureManagedContainers, getWorkspaceIdFromToken
+  redisGet, redisDel, notionClient, ensureManagedContainers, getWorkspaceIdFromToken
 } from "../../_utils";
 
 async function archiveAllRows(notion: any, rulesDbId: string) {
@@ -32,41 +31,38 @@ async function archiveAllRows(notion: any, rulesDbId: string) {
 }
 
 export async function POST(req: Request) {
-  const store = await getCookies();
-  const sid = store.get("sid")?.value;
+  const sid = cookies().get("sid")?.value;
   const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
-  if (!tok?.access_token) return NextResponse.json({ ok:false, error:"Not connected" }, { status:401 });
+  if (!tok?.access_token) return noStoreJson({ ok:false, error:"Not connected" }, 401);
 
   const notion = notionClient(tok.access_token);
   const workspaceId = await getWorkspaceIdFromToken(tok) || "default";
 
-  // body: { mode?: "archive" | "recreate" }
   let mode: "archive" | "recreate" = "recreate";
   try {
     const j = await req.json().catch(() => ({}));
     if (j?.mode === "archive") mode = "archive";
-  } catch { /* ignore */ }
+  } catch {}
 
-  // ensure (and get) current containers
   const ids = await ensureManagedContainers(notion, workspaceId);
   const nowISO = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
 
   if (mode === "archive") {
     const archived = await archiveAllRows(notion, ids.dbId);
-    return NextResponse.json({ ok:true, mode, archived, rulesDbId: ids.dbId });
+    return noStoreJson({ ok:true, mode, archived, rulesDbId: ids.dbId });
   }
 
-  // mode === "recreate": rename old DB, clear cache, create a fresh one
+  // recreate: rename old DB, clear cache, create fresh
   try {
     await notion.databases.update({
       database_id: ids.dbId,
       title: [{ type: "text", text: { content: `Recurrence Rules (Managed) — OLD ${nowISO}` } }]
     } as any);
-  } catch { /* rename might fail; continue */ }
+  } catch {}
 
   await redisDel(`rulesdb:${workspaceId}`);
   await redisDel(`managedpage:${workspaceId}`);
 
   const fresh = await ensureManagedContainers(notion, workspaceId);
-  return NextResponse.json({ ok:true, mode, old: ids, fresh });
+  return noStoreJson({ ok:true, mode, old: ids, fresh });
 }

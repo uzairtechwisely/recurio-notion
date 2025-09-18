@@ -1,179 +1,195 @@
-import { adoptTokenForThisSession } from "../_session";   // or "../../_session"
 // app/api/worker/route.ts
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { noStoreJson } from "../_http"; // <-- fixed: one level up
-import {
-  notionClient, redisGet, ensureManagedContainers, getWorkspaceIdFromToken
-} from "../_utils";
-import { RRule } from "rrule";
-import { cookies as getCookies } from "next/headers";
+import { noStoreJson } from "../_http";
+import { notionClient, ensureManagedContainers, getWorkspaceIdFromToken } from "../_utils";
+import { adoptTokenForThisSession } from "../_session";
 
-function detectProps(page: any) {
-  let titleProp = "Name", dateProp: string | null = null, doneProp: string | null = null, statusProp: string | null = null;
-  for (const k of Object.keys(page.properties || {})) {
-    const t = page.properties[k]?.type;
-    if (t === "title") titleProp = k;
-    if (t === "date"  && !dateProp)  dateProp = k;
-    if (t === "checkbox" && !doneProp) doneProp = k;
-    if (t === "status" && !statusProp) statusProp = k;
+// Very small RRULE helper: produce next ISO from rule pieces
+function nextFrom(rule: string, byday: string[], interval: number, baseISO: string): string | null {
+  const base = new Date(baseISO);
+  if (Number.isNaN(+base)) return null;
+
+  const addDays = (d: Date, n: number) => new Date(d.getTime() + n * 86400000);
+
+  if (rule === "Daily") {
+    const days = Math.max(1, interval || 1);
+    return addDays(base, days).toISOString();
   }
-  return { titleProp, dateProp, doneProp, statusProp };
+  if (rule === "Weekly") {
+    const weekdays = ["SU","MO","TU","WE","TH","FR","SA"];
+    const baseDow = base.getUTCDay(); // 0..6
+    const list = byday.length ? byday.map(s => weekdays.indexOf(s)).filter(n => n >= 0).sort((a,b)=>a-b) : [baseDow];
+    // find next occurrence after base among BYDAYs; if none, jump interval weeks to first
+    for (let i = 1; i <= 7; i++) {
+      const cand = addDays(base, i);
+      const dow = cand.getUTCDay();
+      if (list.includes(dow)) return cand.toISOString();
+    }
+    // fallback: +7*interval days
+    return addDays(base, 7 * Math.max(1, interval || 1)).toISOString();
+  }
+  if (rule === "Monthly") {
+    const months = Math.max(1, interval || 1);
+    const d = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + months, base.getUTCDate(), base.getUTCHours(), base.getUTCMinutes(), base.getUTCSeconds()));
+    return d.toISOString();
+  }
+  if (rule === "Yearly") {
+    const years = Math.max(1, interval || 1);
+    const d = new Date(Date.UTC(base.getUTCFullYear() + years, base.getUTCMonth(), base.getUTCDate(), base.getUTCHours(), base.getUTCMinutes(), base.getUTCSeconds()));
+    return d.toISOString();
+  }
+  // Custom: caller precomputes; we just skip here and keep same time next day as fallback
+  return addDays(base, 1).toISOString();
 }
 
-function isDone(page: any, doneProp: string | null, statusProp: string | null) {
-  if (doneProp) return !!page.properties?.[doneProp]?.checkbox;
-  if (statusProp) {
-    const name = page.properties?.[statusProp]?.status?.name?.toLowerCase?.() || "";
-    return ["done","completed","complete","finished","closed"].includes(name);
+function pickTitle(props: any): string {
+  for (const k of Object.keys(props || {})) {
+    const p = props[k];
+    if (p?.type === "title") {
+      const arr = p?.title || [];
+      return arr.map((t: any) => t?.plain_text || t?.text?.content || "").join("").trim() || "Untitled";
+    }
+  }
+  return "Untitled";
+}
+function isDone(props: any): boolean {
+  for (const k of Object.keys(props || {})) {
+    const p = props[k];
+    if (p?.type === "checkbox") return !!p?.checkbox;
+  }
+  for (const k of Object.keys(props || {})) {
+    const p = props[k];
+    if (p?.type === "status") {
+      const name = p?.status?.name || "";
+      if (String(name).toLowerCase() === "done") return true;
+    }
   }
   return false;
 }
+function getDueISO(props: any): string | null {
+  for (const k of Object.keys(props || {})) {
+    const p = props[k];
+    if (p?.type === "date") {
+      const v = p?.date;
+      if (v?.end) return v.end;
+      if (v?.start) return v.start;
+    }
+  }
+  return null;
+}
 
 export async function GET() {
-  const sid = (await getCookies()).get("sid")?.value || null;
-  const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
-  if (!tok?.access_token) return noStoreJson({ processed:0, created:0, details:[], error:"no token" }, 401);
-
+  const { tok } = await adoptTokenForThisSession();
+  if (!tok?.access_token) return noStoreJson({ ok: false, error: "no token" }, 401);
   const notion = notionClient(tok.access_token);
-  const workspaceId = await getWorkspaceIdFromToken(tok) || "default";
-  const { dbId: rulesDbId } = await ensureManagedContainers(notion, workspaceId);
-
-  // pull active rules
-  const rules:any = await notion.databases.query({
-    database_id: rulesDbId,
-    filter: { property: "Active", checkbox: { equals: true } },
-    page_size: 100
-  });
 
   let processed = 0, created = 0;
-  const details: Array<{ from: string; to?: string; title?: string; next?: string; movedRule?: boolean; note?: string }> = [];
+  const details: any[] = [];
 
-  for (const r of rules.results) {
-    const props = r.properties as any;
+  try {
+    const workspaceId = getWorkspaceIdFromToken(tok) || tok.workspace_id;
+    const { dbId: rulesDb } = await ensureManagedContainers(notion, workspaceId);
+    if (!rulesDb) return noStoreJson({ ok: false, error: "rules db missing" }, 500);
 
-    // read config + pointer
-    const taskId: string | undefined = props["Task Page ID"]?.rich_text?.[0]?.plain_text;
-    const cfg = {
-      rule: props["Rule"]?.select?.name || "Weekly",
-      byday: (props["By Day"]?.multi_select || []).map((x: any) => x.name as string),
-      interval: props["Interval"]?.number || 1,
-      time: (props["Time"]?.rich_text?.[0]?.plain_text || ""),
-      tz: (props["Timezone"]?.rich_text?.[0]?.plain_text || ""),
-      custom: (props["Custom RRULE"]?.rich_text?.[0]?.plain_text || "")
-    };
-    if (!taskId) { processed++; continue; }
-
-    const page:any = await notion.pages.retrieve({ page_id: taskId }).catch(()=>null);
-    if (!page) { processed++; details.push({ from: taskId, note: "missing page" }); continue; }
-
-    const parentDb = page.parent?.database_id;
-    const { titleProp, dateProp, doneProp, statusProp } = detectProps(page);
-    const due = dateProp ? page.properties?.[dateProp]?.date?.start : null;
-    const done = isDone(page, doneProp, statusProp);
-
-    if (!parentDb || !due || !done) { processed++; continue; }
-
-    // ---- build a rule ANCHORED at the task's current Due ----
-    const dueStr = String(due);
-    const anchor = new Date(dueStr);
-    const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(dueStr);
-
-    let opts: any = { freq: RRule.DAILY, interval: Number(cfg.interval || 1), dtstart: anchor };
-    switch (cfg.rule) {
-      case "Weekly":
-        opts.freq = RRule.WEEKLY;
-        if (Array.isArray(cfg.byday) && cfg.byday.length) {
-          opts.byweekday = cfg.byday.map((d: string) => (RRule as any)[d]);
-        }
-        break;
-      case "Monthly": opts.freq = RRule.MONTHLY; break;
-      case "Yearly":  opts.freq = RRule.YEARLY;  break;
-      case "Daily":
-      default:        opts.freq = RRule.DAILY;
-    }
-
-    const rr = new RRule(opts);
-    const next = rr.after(anchor, false); // strictly after current due
-    if (!next) { processed++; continue; }
-
-    const nextValue = isDateOnly ? next.toISOString().slice(0, 10) : next.toISOString();
-
-    // ---- prevent duplicates for that exact next value ----
-    const dup:any = await notion.databases.query({
-      database_id: parentDb,
-      filter: { property: dateProp!, date: { equals: nextValue } },
-      page_size: 1
-    });
-    if (dup.results?.length) { processed++; details.push({ from: taskId, note: "duplicate next exists" }); continue; }
-
-    const title = page.properties?.[titleProp]?.title?.[0]?.plain_text || "Untitled";
-
-    // ---- create next task with same schema ----
-    const newProps:any = { [titleProp]: { title: [{ text: { content: title } }] } };
-    if (dateProp) newProps[dateProp] = { date: { start: nextValue } };
-    if (doneProp) newProps[doneProp] = { checkbox: false };
-
-    const newTask:any = await notion.pages.create({
-      parent: { database_id: parentDb },
-      properties: newProps
+    // Load active rules
+    const rr: any = await notion.databases.query({
+      database_id: rulesDb,
+      filter: { property: "Active", checkbox: { equals: true } },
+      page_size: 100,
     });
 
-    // ---- move rule pointer and VERIFY ----
-    let moved = false;
-    try {
-      await notion.pages.update({
-        page_id: r.id,
-        properties: { "Task Page ID": { rich_text: [{ text: { content: newTask.id } }] } }
-      });
-      const recheck:any = await notion.pages.retrieve({ page_id: r.id });
-      const nowId: string | undefined = recheck.properties?.["Task Page ID"]?.rich_text?.[0]?.plain_text;
-      moved = nowId === newTask.id;
+    for (const r of rr?.results || []) {
+      const props = (r as any).properties || {};
+      const taskId = (props?.["Task Page ID"]?.rich_text?.[0]?.plain_text || props?.["Task Page ID"]?.rich_text?.[0]?.text?.content || "").trim();
+      const rule = props?.["Rule"]?.select?.name || "Weekly";
+      const byday = (props?.["By Day"]?.multi_select || []).map((m: any) => m?.name).filter(Boolean);
+      const interval = Number(props?.["Interval"]?.number || 1);
+      const custom = (props?.["Custom RRULE"]?.rich_text?.[0]?.plain_text || props?.["Custom RRULE"]?.rich_text?.[0]?.text?.content || "").trim();
 
-      if (!moved) {
-        await notion.pages.create({
-          parent: { database_id: rulesDbId },
-          properties: {
-            "Rule Name": { title: [{ text: { content: `Rule for ${newTask.id.slice(0,6)}` } }] },
-            "Task Page ID": { rich_text: [{ text: { content: newTask.id } }] },
-            "Rule": { select: { name: cfg.rule } },
-            "By Day": { multi_select: (cfg.byday || []).map((n: string) => ({ name: n })) },
-            "Interval": { number: Number(cfg.interval || 1) },
-            "Time": { rich_text: [{ text: { content: cfg.time || "" } }] },
-            "Timezone": { rich_text: [{ text: { content: cfg.tz || "" } }] },
-            "Custom RRULE": { rich_text: [{ text: { content: cfg.custom || "" } }] },
-            "Active": { checkbox: true }
-          }
-        });
-        await notion.pages.update({ page_id: r.id, properties: { "Active": { checkbox: false } } });
-        moved = true;
-      }
-    } catch {
+      if (!taskId) continue;
+
+      // Read current task
+      let task: any;
       try {
-        await notion.pages.create({
-          parent: { database_id: rulesDbId },
-          properties: {
-            "Rule Name": { title: [{ text: { content: `Rule for ${newTask.id.slice(0,6)}` } }] },
-            "Task Page ID": { rich_text: [{ text: { content: newTask.id } }] },
-            "Rule": { select: { name: cfg.rule } },
-            "By Day": { multi_select: (cfg.byday || []).map((n: string) => ({ name: n })) },
-            "Interval": { number: Number(cfg.interval || 1) },
-            "Time": { rich_text: [{ text: { content: cfg.time || "" } }] },
-            "Timezone": { rich_text: [{ text: { content: cfg.tz || "" } }] },
-            "Custom RRULE": { rich_text: [{ text: { content: cfg.custom || "" } }] },
-            "Active": { checkbox: true }
-          }
-        });
-        await notion.pages.update({ page_id: r.id, properties: { "Active": { checkbox: false } } });
-        moved = true;
-      } catch { /* ignore */ }
+        task = await notion.pages.retrieve({ page_id: taskId });
+      } catch {
+        continue; // task deleted or inaccessible
+      }
+
+      const tProps = task.properties || {};
+      const title = pickTitle(tProps);
+      const due = getDueISO(tProps);
+      const done = isDone(tProps);
+
+      processed++;
+
+      if (!done || !due) {
+        continue; // nothing to do until user marks Done AND there is a due date
+      }
+
+      // Create next due date according to rule/custom
+      const baseISO = due;
+      let nextISO: string | null = null;
+      if (custom) {
+        // Minimal custom handling: if DAILY n, or WEEKLY BYDAY... user-provided; fallback to +1d
+        nextISO = nextFrom("Daily", [], 1, baseISO);
+      } else {
+        nextISO = nextFrom(rule, byday, interval, baseISO);
+      }
+      if (!nextISO) continue;
+
+      // Copy to same database
+      const parentDb = task?.parent?.database_id;
+      if (!parentDb) continue;
+
+      const createdPage: any = await notion.pages.create({
+        parent: { database_id: parentDb },
+        properties: {
+          // Title: reuse the same title
+          ...(Object.fromEntries(
+            Object.entries(tProps).filter(([, p]: any) => p?.type === "title").map(([k]) => [k, tProps[k]])
+          )),
+          // Due: set to next
+          ...(Object.fromEntries(
+            Object.entries(tProps)
+              .filter(([, p]: any) => p?.type === "date")
+              .slice(0, 1) // only first date prop treated as Due
+              .map(([k]) => [k, { date: { start: nextISO } }])
+          )),
+          // Reset first checkbox (Done) if present
+          ...(Object.fromEntries(
+            Object.entries(tProps)
+              .filter(([, p]: any) => p?.type === "checkbox")
+              .slice(0, 1)
+              .map(([k]) => [k, { checkbox: false }])
+          )),
+        },
+      });
+
+      // Point rule to the new task
+      await notion.pages.update({
+        page_id: (r as any).id,
+        properties: {
+          "Task Page ID": {
+            rich_text: [{ type: "text", text: { content: createdPage.id } }],
+          },
+        },
+      });
+
+      created++;
+      details.push({
+        title,
+        from: taskId,
+        to: createdPage.id,
+        next: nextISO,
+      });
     }
 
-    created++; processed++;
-    details.push({ from: taskId, to: newTask.id, title, next: nextValue, movedRule: moved });
+    return noStoreJson({ ok: true, processed, created, details });
+  } catch (e: any) {
+    return noStoreJson({ ok: false, error: e?.message || "worker failed", processed, created, details }, 500);
   }
-
-  return noStoreJson({ processed, created, details });
 }

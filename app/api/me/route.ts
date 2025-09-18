@@ -1,16 +1,15 @@
-// app/api/me/route.ts
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { cookies as getCookies } from "next/headers";
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { redisGet } from "../_utils";
 
 export async function GET() {
-  const sid = (await getCookies()).get("sid")?.value || null;
+  const sid = cookies().get("sid")?.value || null;
 
-  // Keep your UX: prefer per-session, fallback to last good token (for iframes/popups)
+  // Prefer per-session token, but allow fallback for embedded reconnect UX
   const tokBySid = sid ? await redisGet<any>(`tok:${sid}`) : null;
   const tokLatest = await redisGet<any>("tok:latest");
   const tok = tokBySid || tokLatest;
@@ -24,7 +23,6 @@ export async function GET() {
   }
 
   try {
-    // Validate that the token still works (handles revoke/remove)
     const resp = await fetch("https://api.notion.com/v1/users/me", {
       headers: {
         Authorization: `Bearer ${tok.access_token}`,
@@ -36,7 +34,7 @@ export async function GET() {
 
     const res = NextResponse.json({
       connected: resp.ok,
-      source: tokBySid ? "sid" : "latest", // handy for debugging
+      source: tokBySid ? "sid" : "latest",
     });
     res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
     res.headers.set("Pragma", "no-cache");

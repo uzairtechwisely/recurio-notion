@@ -27,7 +27,7 @@ function titleOf(page: any): string {
 
 /** ---- schema repair: add properties + options if missing ---- */
 async function ensureRulesSchema(notion: any, dbId: string) {
-  const needProps: any = {
+  const needProps: Record<string, any> = {
     "Rule Name":    { title: {} },
     "Task Page ID": { rich_text: {} },
     "Rule":         { select: { options: [
@@ -43,47 +43,62 @@ async function ensureRulesSchema(notion: any, dbId: string) {
     "Active":       { checkbox: {} },
   };
 
-  // 1) fetch current schema
-  const meta = await notion.databases.retrieve({ database_id: dbId });
+  const meta: any = await notion.databases.retrieve({ database_id: dbId });
+  const existingProps: Record<string, any> = meta?.properties || {};
 
-  // 2) build update patch: add missing props and enrich select/multi_select options
-  const patch: any = { properties: {} as any };
-  const existingProps = (meta as any).properties || {};
+  const patch: { properties: Record<string, any> } = { properties: {} };
 
-  for (const [name, def] of Object.entries(needProps)) {
-    const have = (existingProps as any)[name];
+  const entries = Object.entries(needProps) as Array<[string, any]>;
+  for (const [name, def] of entries) {
+    const have: any = existingProps[name];
+
+    // Missing property entirely → add it
     if (!have) {
-      // missing property entirely
-      (patch.properties as any)[name] = def;
+      patch.properties[name] = def;
       continue;
     }
 
-    // If property exists, ensure select/multi_select options include what we need
-    if (def.select) {
+    // Enrich select options (if needed)
+    if (def?.select) {
       const haveOpts = (have.select?.options || []).map((o: any) => String(o.name));
       const needOpts = (def.select.options || []).map((o: any) => String(o.name));
       const addOpts = needOpts.filter((n: string) => !haveOpts.includes(n));
       if (addOpts.length) {
-        (patch.properties as any)[name] = {
-          select: { options: [...(have.select?.options || []), ...addOpts.map((n: string) => ({ name: n }))] }
+        patch.properties[name] = {
+          select: {
+            options: [
+              ...(have.select?.options || []),
+              ...addOpts.map((n: string) => ({ name: n })),
+            ],
+          },
         };
       }
     }
-    if (def.multi_select) {
+
+    // Enrich multi_select options (if needed)
+    if (def?.multi_select) {
       const haveOpts = (have.multi_select?.options || []).map((o: any) => String(o.name));
       const needOpts = (def.multi_select.options || []).map((o: any) => String(o.name));
       const addOpts = needOpts.filter((n: string) => !haveOpts.includes(n));
       if (addOpts.length) {
-        (patch.properties as any)[name] = {
-          multi_select: { options: [...(have.multi_select?.options || []), ...addOpts.map((n: string) => ({ name: n }))] }
+        patch.properties[name] = {
+          multi_select: {
+            options: [
+              ...(have.multi_select?.options || []),
+              ...addOpts.map((n: string) => ({ name: n })),
+            ],
+          },
         };
       }
     }
   }
 
-  // 3) apply patch only if needed
+  // Apply only if we actually changed something
   if (Object.keys(patch.properties).length > 0) {
-    await notion.databases.update({ database_id: dbId, ...patch });
+    await notion.databases.update({
+      database_id: dbId,
+      properties: patch.properties,
+    });
   }
 }
 

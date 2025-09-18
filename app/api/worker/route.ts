@@ -41,7 +41,7 @@ export async function GET(req: Request) {
   });
 
   let processed = 0, created = 0;
-  const details: Array<{ from: string; to?: string; title?: string; next?: string; movedRule?: boolean; note?: string }> = [];
+  const details: Array<{ from: string; to?: string; title?: string; ?: string; movedRule?: boolean; note?: string }> = [];
 
   for (const r of rules.results) {
     const props = r.properties as any;
@@ -68,30 +68,37 @@ export async function GET(req: Request) {
 
     if (!parentDb || !due || !done) { processed++; continue; }
 
-    // compute next due
-    const rule = buildRRule(cfg);
-    const next = rule.after(new Date(due), true);
-    if (!next) { processed++; continue; }
+   // ---- compute next due (strictly after current due) ----
+const dueStr = String(due);
+const anchor = new Date(dueStr);
 
-    // avoid duplicates
-    const dup:any = await notion.databases.query({
-      database_id: parentDb,
-      filter: { property: dateProp!, date: { equals: next.toISOString() } },
-      page_size: 1
-    });
-    if (dup.results?.length) { processed++; details.push({ from: taskId, note: "duplicate next exists" }); continue; }
+// IMPORTANT: 'false' = strictly after, never the same occurrence
+const next = rule.after(anchor, false);
+if (!next) { processed++; continue; }
 
-    const title = page.properties?.[titleProp]?.title?.[0]?.plain_text || "Untitled";
+// keep the same style as the original field (date-only vs date-time)
+const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(dueStr);
+const nextValue = isDateOnly ? next.toISOString().slice(0, 10) : next.toISOString();
 
-    // create next task with same schema
-    const newProps:any = { [titleProp]: { title: [{ text: { content: title } }] } };
-    if (dateProp) newProps[dateProp] = { date: { start: next.toISOString() } };
-    if (doneProp) newProps[doneProp] = { checkbox: false };
+// ---- avoid duplicates in DB for that next date ----
+const dup: any = await notion.databases.query({
+  database_id: parentDb,
+  filter: { property: dateProp!, date: { equals: nextValue } },
+  page_size: 1
+});
+if (dup.results?.length) { processed++; details.push({ from: taskId, note: "duplicate next exists" }); continue; }
 
-    const newTask:any = await notion.pages.create({
-      parent: { database_id: parentDb },
-      properties: newProps
-    });
+// ---- create next task, preserving schema and date format ----
+const title = page.properties?.[titleProp]?.title?.[0]?.plain_text || "Untitled";
+const newProps: any = { [titleProp]: { title: [{ text: { content: title } }] } };
+if (dateProp) newProps[dateProp] = { date: { start: nextValue } };
+if (doneProp) newProps[doneProp] = { checkbox: false };
+
+const newTask: any = await notion.pages.create({
+  parent: { database_id: parentDb },
+  properties: newProps
+});
+
 
     // --- Move rule pointer and VERIFY ---
     let moved = false;

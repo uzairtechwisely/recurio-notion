@@ -16,16 +16,16 @@ export async function POST(req: Request) {
   const workspaceId = await getWorkspaceIdFromToken(tok) || "default";
   const { dbId: rulesDbId } = await ensureManagedContainers(notion, workspaceId);
 
-  // Does a rule already exist for this Task Page?
+  // look up existing rule by Task Page ID (text)
   const existing:any = await notion.databases.query({
     database_id: rulesDbId,
-    filter: { property: "Task Page", relation: { contains: taskPageId } },
+    filter: { property: "Task Page ID", rich_text: { equals: taskPageId } },
     page_size: 1
   });
 
   const props:any = {
     "Rule Name": { title: [{ text: { content: `Rule for ${taskPageId.slice(0,6)}` } }] },
-    "Task Page": { relation: [{ id: taskPageId }] },
+    "Task Page ID": { rich_text: [{ type: "text", text: { content: taskPageId } }] },
     "Rule": { select: { name: rule } },
     "By Day": { multi_select: (byday || "").split(",").map((s:string)=>s.trim()).filter(Boolean).map((n:string)=>({ name:n })) },
     "Interval": { number: Number(interval || 1) },

@@ -40,6 +40,10 @@ export async function redisSMembers(setKey: string): Promise<string[]> {
   } catch {
     return Array.isArray(res) ? (res as string[]) : [];
   }
+export async function redisDel(key: string) {
+  await r(`del/${encodeURIComponent(key)}`);
+  }
+
 }
 
 // -------- Notion helpers ----------

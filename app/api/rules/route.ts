@@ -7,7 +7,7 @@ import { noStoreJson } from "../_http";
 import { redisGet, notionClient, ensureManagedContainers, getWorkspaceIdFromToken } from "../_utils";
 
 export async function POST(req: Request) {
-  const sid = (await getCookies()).get("sid")?.value;
+  const sid = (await getCookies()).get("sid")?.value || null;
   const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
   if (!tok?.access_token) return noStoreJson({ ok:false, error:"Not connected" }, 401);
 

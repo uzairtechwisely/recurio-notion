@@ -22,19 +22,12 @@ export async function redisSet(key: string, val: any) {
   const v = typeof val === "string" ? val : JSON.stringify(val);
   await r(`set/${encodeURIComponent(key)}/${encodeURIComponent(v)}`);
 }
-export async function redisSAdd(setKey: string, member: string) {
-  await r(`sadd/${encodeURIComponent(setKey)}/${encodeURIComponent(member)}`);
-}
-export async function redisSMembers(setKey: string): Promise<string[]> {
-  const res = await r(`smembers/${encodeURIComponent(setKey)}`);
-  try { return JSON.parse(res) } catch { return Array.isArray(res) ? res : []; }
-}
 
 export function notionClient(token: string) {
   return new Client({ auth: token });
 }
 
-// ----- RRULE helpers
+// ---- RRULE helpers
 export function buildRRule(input: {
   rule: string; byday?: string[]; interval?: number; time?: string; custom?: string;
 }) {
@@ -52,18 +45,17 @@ export function buildRRule(input: {
   return new RRule(opts);
 }
 
-// ----- Workspace + Rules DB
+// ---- Workspace + Rules DB
 export async function getWorkspaceIdFromToken(tok: any): Promise<string|null> {
   return tok?.workspace_id || null;
 }
 
 export async function ensureManagedContainers(notion: Client, workspaceId: string): Promise<{ pageId: string, dbId: string }> {
-  const cachedDb = await redisGet<string>(`rulesdb:${workspaceId}`);
-  const cachedPage = await redisGet<string>(`managedpage:${workspaceId}`);
+  // try cache
+  let pageId = await redisGet<string>(`managedpage:${workspaceId}`);
+  let dbId   = await redisGet<string>(`rulesdb:${workspaceId}`);
 
-  let pageId = cachedPage || "";
-  let dbId   = cachedDb   || "";
-
+  // parent page
   if (!pageId) {
     const p:any = await notion.pages.create({
       parent: { type: "workspace", workspace: true } as any,
@@ -74,6 +66,7 @@ export async function ensureManagedContainers(notion: Client, workspaceId: strin
     await redisSet(`managedpage:${workspaceId}`, pageId);
   }
 
+  // rules DB
   if (!dbId) {
     const db:any = await notion.databases.create({
       parent: { type: "page_id", page_id: pageId },
@@ -81,8 +74,6 @@ export async function ensureManagedContainers(notion: Client, workspaceId: strin
       title: [{ type: "text", text: { content: "Recurrence Rules (Managed)" } }],
       properties: {
         "Rule Name": { title: {} },
-        // We *also* keep a relation if you later want it, but we’ll rely on Task Page ID text for robustness.
-        "Task Page": { relation: { database_id: "00000000-0000-0000-0000-000000000000" } as any },
         "Task Page ID": { rich_text: {} },
         "Rule": { select: { options: [
           { name: "Daily" }, { name: "Weekly" }, { name: "Monthly" }, { name: "Yearly" }, { name: "Custom" }
@@ -98,13 +89,13 @@ export async function ensureManagedContainers(notion: Client, workspaceId: strin
     dbId = db.id;
     await redisSet(`rulesdb:${workspaceId}`, dbId);
   } else {
-    // ensure Task Page ID exists on existing DB
+    // ensure key columns exist
     const db:any = await notion.databases.retrieve({ database_id: dbId });
-    if (!db.properties?.["Task Page ID"]) {
-      await notion.databases.update({
-        database_id: dbId,
-        properties: { "Task Page ID": { rich_text: {} } as any }
-      } as any);
+    const need: Record<string, any> = {};
+    if (!db.properties?.["Task Page ID"]) need["Task Page ID"] = { rich_text: {} } as any;
+    if (!db.properties?.["Rule Name"])    need["Rule Name"]    = { title: {} } as any;
+    if (Object.keys(need).length) {
+      await notion.databases.update({ database_id: dbId, properties: need } as any);
     }
   }
 

@@ -8,7 +8,7 @@ import {
   notionClient, redisGet, ensureManagedContainers, getWorkspaceIdFromToken
 } from "../_utils";
 import { RRule } from "rrule";
-import { cookies } from "next/headers";
+import { cookies as getCookies } from "next/headers";
 
 function detectProps(page: any) {
   let titleProp = "Name", dateProp: string | null = null, doneProp: string | null = null, statusProp: string | null = null;
@@ -32,7 +32,7 @@ function isDone(page: any, doneProp: string | null, statusProp: string | null) {
 }
 
 export async function GET() {
-  const sid = cookies().get("sid")?.value || null;
+  const sid = (await getCookies()).get("sid")?.value || null;
   const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
   if (!tok?.access_token) return noStoreJson({ processed:0, created:0, details:[], error:"no token" }, 401);
 

@@ -2,19 +2,29 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { cookies as getCookies } from "next/headers";
+import { cookies } from "next/headers";
 import { noStoreJson } from "../_http";
 import { redisGet, notionClient } from "../_utils";
 
 export async function GET() {
-  const sid = (await getCookies()).get("sid")?.value;
+  const sid = cookies().get("sid")?.value || null;
   const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
   if (!tok?.access_token) return noStoreJson({ databases: [] }, 401);
 
   const notion = notionClient(tok.access_token);
-  const res: any = await notion.search({ filter: { value: "database", property: "object" } });
+  const res: any = await notion.search({
+    filter: { value: "database", property: "object" },
+    page_size: 50,
+  });
+
   const databases = (res.results || []).map((d: any) => ({
-    id: d.id, title: d.title?.[0]?.plain_text || d.title?.[0]?.text?.content || "Untitled DB",
+    id: d.id,
+    title:
+      d.title?.[0]?.plain_text ||
+      d.title?.[0]?.text?.content ||
+      d.properties?.title?.title?.[0]?.plain_text ||
+      "Untitled DB",
   }));
+
   return noStoreJson({ databases });
 }

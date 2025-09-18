@@ -1,69 +1,42 @@
-import { adoptTokenForThisSession } from "../_session";   // or "../../_session"
+// app/api/admin/reset-managed/route.ts
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { cookies as getCookies } from "next/headers";
 import { noStoreJson } from "../../_http";
-import {
-  redisGet, redisDel, notionClient, ensureManagedContainers, getWorkspaceIdFromToken
-} from "../../_utils";
-
-async function archiveAllRows(notion: any, rulesDbId: string) {
-  let archived = 0;
-  let cursor: string | undefined = undefined;
-
-  while (true) {
-    const res: any = await notion.databases.query({
-      database_id: rulesDbId,
-      page_size: 100,
-      start_cursor: cursor
-    });
-    for (const row of res.results) {
-      try {
-        await notion.pages.update({ page_id: row.id, archived: true });
-        archived++;
-      } catch (_) {}
-    }
-    if (!res.has_more) break;
-    cursor = res.next_cursor || undefined;
-  }
-  return archived;
-}
+import { notionClient, ensureManagedContainers, getWorkspaceIdFromToken } from "../../_utils";
+import { adoptTokenForThisSession } from "../../_session";
 
 export async function POST(req: Request) {
-  const sid = (await getCookies()).get("sid")?.value
-  const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
-  if (!tok?.access_token) return noStoreJson({ ok:false, error:"Not connected" }, 401);
-
+  const { tok } = await adoptTokenForThisSession();
+  if (!tok?.access_token) return noStoreJson({ ok: false, error: "no token" }, 401);
   const notion = notionClient(tok.access_token);
-  const workspaceId = await getWorkspaceIdFromToken(tok) || "default";
 
-  let mode: "archive" | "recreate" = "recreate";
+  const body = await req.json().catch(() => ({} as any));
+  const mode = (body.mode || "").trim(); // "archive" or ""
+
   try {
-    const j = await req.json().catch(() => ({}));
-    if (j?.mode === "archive") mode = "archive";
-  } catch {}
+    const workspaceId = getWorkspaceIdFromToken(tok) || tok.workspace_id;
+    const { dbId, pageId, panelId } = await ensureManagedContainers(notion, workspaceId);
+    if (!dbId || !pageId) return noStoreJson({ ok: false, error: "ensure failed" }, 500);
 
-  const ids = await ensureManagedContainers(notion, workspaceId);
-  const nowISO = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
+    if (mode === "archive") {
+      // Archive all active rule rows (soft delete)
+      const rr: any = await notion.databases.query({
+        database_id: dbId,
+        filter: { property: "Active", checkbox: { equals: true } },
+        page_size: 100,
+      });
+      let archived = 0;
+      for (const r of rr?.results || []) {
+        await notion.pages.update({ page_id: (r as any).id, archived: true });
+        archived++;
+      }
+      return noStoreJson({ ok: true, archived });
+    }
 
-  if (mode === "archive") {
-    const archived = await archiveAllRows(notion, ids.dbId);
-    return noStoreJson({ ok:true, mode, archived, rulesDbId: ids.dbId });
+    return noStoreJson({ ok: true, pageId, dbId, panelId });
+  } catch (e: any) {
+    return noStoreJson({ ok: false, error: e?.message || "reset failed" }, 500);
   }
-
-  // recreate: rename old DB, clear cache, create fresh
-  try {
-    await notion.databases.update({
-      database_id: ids.dbId,
-      title: [{ type: "text", text: { content: `Recurrence Rules (Managed) — OLD ${nowISO}` } }]
-    } as any);
-  } catch {}
-
-  await redisDel(`rulesdb:${workspaceId}`);
-  await redisDel(`managedpage:${workspaceId}`);
-
-  const fresh = await ensureManagedContainers(notion, workspaceId);
-  return noStoreJson({ ok:true, mode, old: ids, fresh });
 }

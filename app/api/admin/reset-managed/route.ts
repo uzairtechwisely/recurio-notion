@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { cookies } from "next/headers";
+import { cookies as getCookies } from "next/headers";
 import { noStoreJson } from "../../_http";
 import {
   redisGet, redisDel, notionClient, ensureManagedContainers, getWorkspaceIdFromToken
@@ -31,7 +31,7 @@ async function archiveAllRows(notion: any, rulesDbId: string) {
 }
 
 export async function POST(req: Request) {
-  const sid = cookies().get("sid")?.value;
+  const sid = (await getCookies()).get("sid")?.value
   const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
   if (!tok?.access_token) return noStoreJson({ ok:false, error:"Not connected" }, 401);
 

@@ -16,16 +16,32 @@ export async function GET(req: Request) {
   const dbId = u.searchParams.get("db");
   if (!dbId) return noStoreJson({ ok: false, error: "missing_db_param" }, 400);
 
+  let retrieveOk = false;
+  let retrieveErr: string | null = null;
+  let queryOk = false;
+  let queryErr: string | null = null;
+
   try {
-    const meta = await notion.databases.retrieve({ database_id: dbId }).catch((e: any) => ({ _err: e?.message || String(e) }));
-    let queryOk = true, queryErr = null;
+    await notion.databases.retrieve({ database_id: dbId });
+    retrieveOk = true;
+  } catch (e: any) {
+    retrieveErr = e?.message || String(e);
+  }
+
+  if (retrieveOk) {
     try {
       await notion.databases.query({ database_id: dbId, page_size: 1 });
+      queryOk = true;
     } catch (e: any) {
-      queryOk = false; queryErr = e?.message || String(e);
+      queryErr = e?.message || String(e);
     }
-    return noStoreJson({ ok: true, retrieveOk: !meta?._err, retrieveErr: meta?._err || null, queryOk, queryErr });
-  } catch (e: any) {
-    return noStoreJson({ ok: false, error: e?.message || "probe_failed" }, 500);
   }
+
+  return noStoreJson({
+    ok: true,
+    retrieveOk,
+    retrieveErr,
+    queryOk,
+    queryErr,
+  });
 }

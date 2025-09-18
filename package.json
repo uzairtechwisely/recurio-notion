@@ -11,6 +11,8 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "next": "15.5.3"
+    "@notionhq/client": "2.2.15",
+    "nanoid": "5.0.7"
   },
   "devDependencies": {
     "typescript": "^5",

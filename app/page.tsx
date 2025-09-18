@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 
 type Db = { id: string; title: string };
-type Task = { id: string; name: string; due: string | null; done: boolean; parentDb: string };
+type Task = { id: string; name: string; due: string | null; done: boolean; parentDb: string; hasRule?: boolean };
 
 export default function Home() {
   const [connected, setConnected] = useState(false);
@@ -17,6 +17,29 @@ export default function Home() {
   const [notice, setNotice] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<null | { processed:number; created:number; details?: any[] }>(null);
 
+  async function disconnect() {
+  setNotice(null);
+  const r = await fetch("/api/admin/disconnect", { method: "POST" });
+  if (r.ok) {
+    setConnected(false);
+    setDbs([]); setDbId(""); setTasks([]);
+    setNotice("Disconnected. You can connect Notion again.");
+  } else {
+    setNotice("Failed to disconnect.");
+  }
+}
+
+async function resetManaged() {
+  setNotice(null);
+  if (!confirm("This will recreate the hidden 'Techwisely (Managed)' assets. Existing rule rows won’t be deleted. Continue?")) return;
+  const r = await fetch("/api/admin/reset-managed", { method: "POST" });
+  const j = await r.json().catch(()=>({}));
+  if (r.ok && j.ok) {
+    setNotice("Managed assets recreated. If you had rules, save one again to repopulate.");
+  } else {
+    setNotice(j.error || "Failed to reset managed assets.");
+  }
+}
   async function checkStatus() {
     setChecking(true);
     setNotice(null);
@@ -114,17 +137,20 @@ export default function Home() {
       <h1>Recurio — barebones</h1>
 
       {/* Connect row */}
-      <div style={{border:"1px solid #111", padding:12, margin:"12px 0", display:"flex", alignItems:"center", gap:12}}>
-        <button onClick={connect}>Connect Notion</button>
-        <span style={{
-          display:"inline-flex", alignItems:"center", gap:8, padding:"4px 8px",
-          border:"1px solid #111", background: connected ? "#eaffea" : "#fff3f3"
-        }}>
-          <span style={{ width:10, height:10, borderRadius:"50%", background: connected ? "#2ecc71" : "#e74c3c", display:"inline-block" }} />
-          {checking ? "Checking..." : connected ? "Connected" : "Not connected"}
-        </span>
-        <button onClick={checkStatus} style={{marginLeft:"auto"}}>Check status</button>
-      </div>
+    <div style={{border:"1px solid #111", padding:12, margin:"12px 0", display:"flex", alignItems:"center", gap:12}}>
+  <button onClick={connect}>Connect Notion</button>
+  <span style={{ display:"inline-flex", alignItems:"center", gap:8, padding:"4px 8px",
+                  border:"1px solid #111", background: connected ? "#eaffea" : "#fff3f3" }}>
+    <span style={{ width:10, height:10, borderRadius:"50%",
+                   background: connected ? "#2ecc71" : "#e74c3c", display:"inline-block" }} />
+    {checking ? "Checking..." : connected ? "Connected" : "Not connected"}
+  </span>
+  <button onClick={checkStatus}>Check status</button>
+  <div style={{marginLeft:"auto", display:"flex", gap:8}}>
+    <button onClick={disconnect}>Disconnect</button>
+    <button onClick={resetManaged}>Reset managed</button>
+  </div>
+</div>
 
       {/* Notice / errors */}
       {notice && (
@@ -177,6 +203,22 @@ export default function Home() {
               </li>
             ))}
           </ul>
+          <ul>
+              {tasks.map(t => (
+                <li key={t.id} style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <label style={{ flex:1 }}>
+                    <input type="radio" name="pick" onChange={() => setTaskId(t.id)} />{" "}
+                    <b>{t.name}</b> &nbsp; <small>Due: {t.due || "-"}</small>
+                  </label>
+                  {t.hasRule && (
+                    <span title="This task is controlled by a recurrence rule"
+                          style={{ fontSize:12, border:"1px solid #111", padding:"2px 6px", background:"#eefbea" }}>
+                      Has rule
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
 
           <form onSubmit={saveRule} style={{marginTop:12}}>
             <input type="hidden" name="taskPageId" value={taskId} />

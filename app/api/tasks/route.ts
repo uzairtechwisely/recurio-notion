@@ -1,109 +1,135 @@
-import { adoptTokenForThisSession } from "../_session";   // or "../../_session"
+// app/api/tasks/route.ts
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { cookies as getCookies } from "next/headers";
 import { noStoreJson } from "../_http";
-import { redisGet, notionClient, ensureManagedContainers, getWorkspaceIdFromToken } from "../_utils";
+import { notionClient, ensureManagedContainers, getWorkspaceIdFromToken } from "../_utils";
+import { adoptTokenForThisSession } from "../_session";
 
-function isDoneLocal(page: any, doneProp: string | null, statusProp: string | null) {
-  if (doneProp) return !!page.properties?.[doneProp]?.checkbox;
-  if (statusProp) {
-    const name = page.properties?.[statusProp]?.status?.name?.toLowerCase?.() || "";
-    return ["done","completed","complete","finished","closed"].includes(name);
+function pickTitle(props: any): string {
+  for (const k of Object.keys(props || {})) {
+    const p = props[k];
+    if (p?.type === "title") {
+      const arr = p?.title || [];
+      return arr.map((t: any) => t?.plain_text || t?.text?.content || "").join("").trim() || "Untitled";
+    }
+  }
+  return "Untitled";
+}
+function pickFirstOfType(props: any, type: string) {
+  for (const k of Object.keys(props || {})) {
+    const p = props[k];
+    if (p?.type === type) return { key: k, prop: p };
+  }
+  return { key: null, prop: null };
+}
+function isDone(props: any): boolean {
+  // Prefer a checkbox
+  for (const k of Object.keys(props || {})) {
+    const p = props[k];
+    if (p?.type === "checkbox") return !!p?.checkbox;
+  }
+  // Fallback: Status with name "Done"
+  for (const k of Object.keys(props || {})) {
+    const p = props[k];
+    if (p?.type === "status") {
+      const name = p?.status?.name || "";
+      if (String(name).toLowerCase() === "done") return true;
+    }
   }
   return false;
 }
+function getDueISO(props: any): string | null {
+  const { key, prop } = pickFirstOfType(props, "date");
+  if (!key || !prop) return null;
+  const v = prop?.date;
+  if (!v) return null;
+  // Prefer end or start; preserve date-only vs datetime
+  return v?.end || v?.start || null;
+}
+function withinLastDays(dateISO: string, days: number): boolean {
+  const d = new Date(dateISO);
+  if (Number.isNaN(+d)) return false;
+  const now = Date.now();
+  return now - d.getTime() <= days * 86400000;
+}
 
 export async function GET(req: Request) {
-  const u = new URL(req.url);
-  const dbId = u.searchParams.get("db");
-  if (!dbId) return noStoreJson({ tasks: [], meta: {} });
-
-  const sid = (await getCookies()).get("sid")?.value || null;
-  const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
-  if (!tok?.access_token) return noStoreJson({ tasks: [], meta: {} }, 401);
-
+  const { tok } = await adoptTokenForThisSession();
+  if (!tok?.access_token) return noStoreJson({ tasks: [], error: "no token" }, 401);
   const notion = notionClient(tok.access_token);
 
-  // Detect schema
-  const schema: any = await notion.databases.retrieve({ database_id: dbId });
-  const props = schema.properties || {};
-  const titleProp  = Object.keys(props).find(k => props[k].type === "title") || "Name";
-  const dueProp    = Object.keys(props).find(k => props[k].type === "date")  || null;
-  const doneProp   = Object.keys(props).find(k => props[k].type === "checkbox") || null;
-  const statusProp = Object.keys(props).find(k => props[k].type === "status") || null;
+  const u = new URL(req.url);
+  const dbId = u.searchParams.get("db");
+  if (!dbId) return noStoreJson({ tasks: [], error: "missing db param" }, 400);
 
-  // Build filter: upcoming OR overdue (last 14d) OR (no due & created last 14d)
-  const todayStr  = new Date().toISOString().slice(0,10);
-  const past14Str = new Date(Date.now() - 14*24*60*60*1000).toISOString().slice(0,10);
-  const recentIso = new Date(Date.now() - 14*24*60*60*1000).toISOString();
+  try {
+    // Query tasks (recent & upcoming)
+    const q: any = await notion.databases.query({
+      database_id: dbId,
+      page_size: 50,
+      sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
+    });
 
-  let filter: any;
-  if (dueProp) {
-    filter = {
-      or: [
-        { property: dueProp, date: { on_or_after: todayStr } },
-        { and: [
-          { property: dueProp, date: { on_or_after: past14Str } },
-          { property: dueProp, date: { before: todayStr } }
-        ]},
-        { and: [
-          { property: dueProp, date: { is_empty: true } },
-          { timestamp: "created_time", created_time: { on_or_after: recentIso } }
-        ]}
-      ]
-    };
-  } else {
-    filter = { timestamp: "created_time", created_time: { on_or_after: recentIso } };
+    const pages: any[] = q?.results || [];
+
+    // Build a set of task IDs that have rules, to set hasRule flag
+    const workspaceId = getWorkspaceIdFromToken(tok) || tok.workspace_id;
+    let ruleTaskIds = new Set<string>();
+    try {
+      if (workspaceId) {
+        const { dbId: rulesDb } = await ensureManagedContainers(notion, workspaceId);
+        if (rulesDb) {
+          const rr: any = await notion.databases.query({
+            database_id: rulesDb,
+            filter: { property: "Active", checkbox: { equals: true } },
+            page_size: 100,
+          });
+          for (const r of rr?.results || []) {
+            const props = (r as any)?.properties || {};
+            const txt = props?.["Task Page ID"]?.rich_text || [];
+            const id = (txt[0]?.plain_text || txt[0]?.text?.content || "").trim();
+            if (id) ruleTaskIds.add(id);
+          }
+        }
+      }
+    } catch { /* ignore rule lookup errors */ }
+
+    const now = new Date();
+    const out = pages.map((pg: any) => {
+      const props = pg?.properties || {};
+      const due = getDueISO(props);
+      const done = isDone(props);
+      const title = pickTitle(props);
+      const hasRule = ruleTaskIds.has(pg.id);
+
+      let overdue = false;
+      if (due && !done) {
+        const d = new Date(due);
+        if (+d < +now && withinLastDays(due, 14)) overdue = true;
+      }
+
+      return {
+        id: pg.id,
+        name: title,
+        due: due || null,
+        done,
+        parentDb: dbId,
+        hasRule,
+        overdue,
+      };
+    })
+    // Keep list light: overdue (<=14d), upcoming (>= now), or recently edited
+    .filter(t => {
+      if (t.overdue) return true;
+      if (!t.due) return true; // no due: still show (user may add a rule)
+      const d = new Date(t.due);
+      return +d >= Date.now() - 6 * 3600_000; // due from last 6h or future
+    });
+
+    return noStoreJson({ tasks: out });
+  } catch (e: any) {
+    return noStoreJson({ tasks: [], error: e?.message || "Could not load tasks" }, 500);
   }
-
-  const query: any = { database_id: dbId, page_size: 50, filter };
-  if (dueProp) query.sorts = [{ property: dueProp, direction: "ascending" }];
-  const res: any = await notion.databases.query(query);
-
-  // Build set of Task IDs that have an ACTIVE rule
-  const workspaceId = await getWorkspaceIdFromToken(tok) || "default";
-  const { dbId: rulesDbId } = await ensureManagedContainers(notion, workspaceId);
-  const rules:any = await notion.databases.query({
-    database_id: rulesDbId,
-    filter: { property: "Active", checkbox: { equals: true } },
-    page_size: 100
-  });
-  const ruleSet = new Set<string>(
-    rules.results
-      .map((r:any) => r.properties?.["Task Page ID"]?.rich_text?.[0]?.plain_text)
-      .filter(Boolean)
-  );
-
-  // Map rows and compute "overdue" (only if within last 14d AND not done)
-  const tasksRaw = res.results.map((p: any) => {
-    const name = p.properties?.[titleProp]?.title?.[0]?.plain_text || "Untitled";
-    const due  = dueProp ? (p.properties?.[dueProp]?.date?.start || null) : null;
-    const done = isDoneLocal(p, doneProp, statusProp);
-    const dueDay = due ? String(due).slice(0,10) : null;
-    const isOverdueWindow = !!(dueDay && dueDay < todayStr && dueDay >= past14Str);
-    const overdue = !!(isOverdueWindow && !done);
-    return {
-      id: p.id,
-      name,
-      due,
-      done,
-      parentDb: dbId!,
-      hasRule: ruleSet.has(p.id),
-      overdue
-    };
-  });
-
-  // Hide overdue older than 14d or any overdue that is done
-  const tasks = tasksRaw.filter((t: any) => {
-    if (!t.due) return true;
-    const d = t.due.slice(0,10);
-    if (d >= todayStr) return true;   // upcoming
-    if (d < past14Str) return false;  // too old
-    return !t.done;                    // overdue window & NOT done
-  });
-
-  return noStoreJson({ tasks, meta: { titleProp, dueProp, doneProp, statusProp } });
 }

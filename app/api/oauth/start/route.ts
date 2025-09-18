@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { cookies } from "next/headers";
+import { cookies as getCookies } from "next/headers";;
 import { noStoreRedirect } from "../../_http";
 import { nanoid } from "nanoid";
 
@@ -11,7 +11,7 @@ export async function GET() {
   const redirectUri = `${process.env.APP_URL}/api/oauth/callback`;
 
   const state = nanoid();
-  const sid = cookies().get("sid")?.value || nanoid();
+  const sid = (await getCookies()).get("sid")?.value || nanoid();
 
   const params = new URLSearchParams({
     client_id: clientId,

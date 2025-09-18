@@ -11,19 +11,18 @@ export default function Home() {
   const [dbId, setDbId] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskId, setTaskId] = useState("");
+  const [syncResult, setSyncResult] = useState<null | { processed:number; created:number; details:any[] }>(null);
 
   async function checkStatus() {
     setChecking(true);
     const d = await (await fetch("/api/me")).json();
     setConnected(!!d.connected);
     setChecking(false);
-    if (d.connected) loadDbs(); // auto-load when connected
+    if (d.connected) loadDbs();
   }
-
   useEffect(() => { checkStatus(); }, []);
 
   async function connect() {
-    // Start OAuth; callback overwrites any old token and sets tok:latest
     window.open("/api/oauth/start", "notionAuth", "width=480,height=720");
     const t = setInterval(async () => {
       const d = await (await fetch("/api/me")).json();
@@ -55,53 +54,46 @@ export default function Home() {
       body: JSON.stringify(body)
     });
     const j = await res.json();
-    alert(j.ok ? "Recurring set." : j.error || "Failed");
+    alert(j.ok ? "Recurring set (saved to Rules DB)." : j.error || "Failed");
   }
 
-  // at the top
-const [syncResult, setSyncResult] = useState<null | { processed:number; created:number; details:any[] }>(null);
-
-// replace runNow() with:
-async function runNow() {
-  setSyncResult(null);
-  const r = await fetch("/api/worker");
-  const d = await r.json();
-  setSyncResult(d);
-}
-
-// in the JSX, inside the form buttons area (under “Sync now” button), add:
-{syncResult && (
-  <div style={{marginTop:8, border:"1px solid #111", padding:8}}>
-    <b>Sync result:</b> processed {syncResult.processed}, created {syncResult.created}
-    {syncResult.details?.length ? (
-      <ul style={{marginTop:6}}>
-        {syncResult.details.map((it, i) => (
-          <li key={i}><small>Created next for <code>{it.title}</code> → due {new Date(it.next).toLocaleString()}</small></li>
-        ))}
-      </ul>
-    ) : null}
-  </div>
-)}
+  async function runNow() {
+    setSyncResult(null);
+    const r = await fetch("/api/worker");
+    const d = await r.json();
+    setSyncResult(d);
+  }
 
   return (
     <main style={{maxWidth:840, margin:"32px auto", padding:"0 16px", fontFamily:"system-ui, Arial"}}>
       <h1>Recurio — barebones</h1>
 
-      {/* Connect section (always visible) */}
+      {/* Connect row */}
       <div style={{border:"1px solid #111", padding:12, margin:"12px 0", display:"flex", alignItems:"center", gap:12}}>
         <button onClick={connect}>Connect Notion</button>
         <span style={{
           display:"inline-flex", alignItems:"center", gap:8, padding:"4px 8px",
           border:"1px solid #111", background: connected ? "#eaffea" : "#fff3f3"
         }}>
-          <span style={{
-            width:10, height:10, borderRadius:"50%",
-            background: connected ? "#2ecc71" : "#e74c3c", display:"inline-block"
-          }} />
+          <span style={{ width:10, height:10, borderRadius:"50%", background: connected ? "#2ecc71" : "#e74c3c", display:"inline-block" }} />
           {checking ? "Checking..." : connected ? "Connected" : "Not connected"}
         </span>
         <button onClick={checkStatus} style={{marginLeft:"auto"}}>Check status</button>
       </div>
+
+      {/* Sync result panel */}
+      {syncResult && (
+        <div style={{border:"1px solid #111", padding:12, margin:"12px 0", background:"#f9f9f9"}}>
+          <b>Sync result:</b> processed {syncResult.processed}, created {syncResult.created}
+          {syncResult.details?.length ? (
+            <ul style={{marginTop:6}}>
+              {syncResult.details.map((it, i) => (
+                <li key={i}><small>Created next for <code>{it.title}</code> → due {new Date(it.next).toLocaleString()}</small></li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      )}
 
       {/* DB browser */}
       <div style={{border:"1px solid #111", padding:12, margin:"12px 0"}}>
@@ -109,13 +101,6 @@ async function runNow() {
           <button onClick={loadDbs} disabled={!connected}>Refresh Databases</button>
           {!connected && <small>Connect first to list your databases.</small>}
         </div>
-
-        {connected && dbs.length === 0 && (
-          <p style={{marginTop:8}}>
-            No databases visible. In Notion, open your Tasks DB → <b>…</b> → <b>Add connections</b> → select this app, then click Refresh.
-          </p>
-        )}
-
         <ul style={{marginTop:8}}>
           {dbs.map((db) => (
             <li key={db.id} style={{marginBottom:8}}>
@@ -148,9 +133,7 @@ async function runNow() {
               <div style={{display:"grid", gap:8, gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))"}}>
                 <label>Rule
                   <select name="rule" defaultValue="Weekly">
-                    <option>Daily</option><option>Weekly</option>
-                    <option>Monthly</option><option>Yearly</option>
-                    <option>Custom</option>
+                    <option>Daily</option><option>Weekly</option><option>Monthly</option><option>Yearly</option><option>Custom</option>
                   </select>
                 </label>
                 <label>By Day (MO,WE,FR)

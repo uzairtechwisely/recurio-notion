@@ -1,9 +1,13 @@
-import { NextResponse } from "next/server";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
+
+import { noStoreJson } from "../../_http";
 import {
-  notionClient, redisGet,
-  ensureManagedContainers, getWorkspaceIdFromToken
+  notionClient, redisGet, ensureManagedContainers, getWorkspaceIdFromToken
 } from "../_utils";
 import { RRule } from "rrule";
+import { cookies } from "next/headers";
 
 function detectProps(page: any) {
   let titleProp = "Name", dateProp: string | null = null, doneProp: string | null = null, statusProp: string | null = null;
@@ -27,8 +31,9 @@ function isDone(page: any, doneProp: string | null, statusProp: string | null) {
 }
 
 export async function GET() {
-  const tok = await redisGet<any>("tok:latest");
-  if (!tok?.access_token) return NextResponse.json({ processed:0, created:0, details:[], error:"no token" });
+  const sid = cookies().get("sid")?.value || null;
+  const tok = sid ? await redisGet<any>(`tok:${sid}`) : null;
+  if (!tok?.access_token) return noStoreJson({ processed:0, created:0, details:[], error:"no token" }, 401);
 
   const notion = notionClient(tok.access_token);
   const workspaceId = await getWorkspaceIdFromToken(tok) || "default";
@@ -67,45 +72,31 @@ export async function GET() {
     const due = dateProp ? page.properties?.[dateProp]?.date?.start : null;
     const done = isDone(page, doneProp, statusProp);
 
-    // must have a parent DB, a Due date, and be marked Done/Completed
     if (!parentDb || !due || !done) { processed++; continue; }
 
     // ---- build a rule ANCHORED at the task's current Due ----
-    const dueStr = String(due);                      // "YYYY-MM-DD" or ISO datetime
-    const anchor = new Date(dueStr);                 // used as dtstart
+    const dueStr = String(due);
+    const anchor = new Date(dueStr);
     const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(dueStr);
 
     let opts: any = { freq: RRule.DAILY, interval: Number(cfg.interval || 1), dtstart: anchor };
-
     switch (cfg.rule) {
       case "Weekly":
         opts.freq = RRule.WEEKLY;
-        // If user selected specific days, honor them. Otherwise, weekly on the same weekday as dtstart.
         if (Array.isArray(cfg.byday) && cfg.byday.length) {
           opts.byweekday = cfg.byday.map((d: string) => (RRule as any)[d]);
         }
         break;
-      case "Monthly":
-        opts.freq = RRule.MONTHLY; // repeats on the dtstart's day-of-month
-        break;
-      case "Yearly":
-        opts.freq = RRule.YEARLY;  // repeats on the dtstart's month/day
-        break;
+      case "Monthly": opts.freq = RRule.MONTHLY; break;
+      case "Yearly":  opts.freq = RRule.YEARLY;  break;
       case "Daily":
-      default:
-        opts.freq = RRule.DAILY;
+      default:        opts.freq = RRule.DAILY;
     }
 
-    // If the task had a specific time (datetime), repeating will keep that time by virtue of dtstart=anchor.
-    // For date-only Due, we keep date-only semantics.
-
     const rr = new RRule(opts);
-
-    // STRICTLY after the current Due; never the same occurrence
-    const next = rr.after(anchor, false);
+    const next = rr.after(anchor, false); // strictly after current due
     if (!next) { processed++; continue; }
 
-    // keep same storage format for Notion (date-only vs datetime)
     const nextValue = isDateOnly ? next.toISOString().slice(0, 10) : next.toISOString();
 
     // ---- prevent duplicates for that exact next value ----
@@ -135,13 +126,11 @@ export async function GET() {
         page_id: r.id,
         properties: { "Task Page ID": { rich_text: [{ text: { content: newTask.id } }] } }
       });
-      // verify
       const recheck:any = await notion.pages.retrieve({ page_id: r.id });
       const nowId: string | undefined = recheck.properties?.["Task Page ID"]?.rich_text?.[0]?.plain_text;
       moved = nowId === newTask.id;
 
       if (!moved) {
-        // fallback: create a fresh rule for the new task + deactivate old
         await notion.pages.create({
           parent: { database_id: rulesDbId },
           properties: {
@@ -160,7 +149,6 @@ export async function GET() {
         moved = true;
       }
     } catch {
-      // hard fallback if update fails
       try {
         await notion.pages.create({
           parent: { database_id: rulesDbId },
@@ -185,5 +173,5 @@ export async function GET() {
     details.push({ from: taskId, to: newTask.id, title, next: nextValue, movedRule: moved });
   }
 
-  return NextResponse.json({ processed, created, details });
+  return noStoreJson({ processed, created, details });
 }

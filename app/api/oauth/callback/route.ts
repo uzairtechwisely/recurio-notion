@@ -9,15 +9,18 @@ import { redisSet } from "../../_utils";
 
 export async function GET(req: Request) {
   const u = new URL(req.url);
-  const origin = u.origin;
+  const base = process.env.APP_URL || u.origin;               // <— single source of truth
   const code = u.searchParams.get("code");
   const inboundState = u.searchParams.get("state");
 
   const jar = await getCookies();
   const stateCookie = jar.get("oauth_state")?.value || null;
-  const sid = jar.get("sid")?.value || null;
+  let sid = jar.get("sid")?.value || null;
 
-  if (!code || !inboundState || !stateCookie || inboundState !== stateCookie || !sid) {
+  // On some iOS/incognito flows the cookie may be missing; mint one so adoption can work.
+  if (!sid) sid = Math.random().toString(36).slice(2);
+
+  if (!code || !inboundState || !stateCookie || inboundState !== stateCookie) {
     return new NextResponse(JSON.stringify({ ok: false, error: "Bad OAuth state" }), {
       status: 400,
       headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
@@ -26,7 +29,7 @@ export async function GET(req: Request) {
 
   const clientId = process.env.NOTION_CLIENT_ID!;
   const clientSecret = process.env.NOTION_CLIENT_SECRET!;
-  const redirectUri = `${origin}/api/oauth/callback`;
+  const redirectUri = `${base}/api/oauth/callback`;
 
   const tokenRes = await fetch("https://api.notion.com/v1/oauth/token", {
     method: "POST",
@@ -34,7 +37,11 @@ export async function GET(req: Request) {
       Authorization: "Basic " + Buffer.from(`${clientId}:${clientSecret}`).toString("base64"),
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ grant_type: "authorization_code", code, redirect_uri: redirectUri }),
+    body: JSON.stringify({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri, // must EXACTLY match Notion's allowed URI
+    }),
     cache: "no-store",
   });
 
@@ -50,17 +57,20 @@ export async function GET(req: Request) {
   await redisSet(`tok:${sid}`, tok);
   await redisSet("tok:latest", tok);
 
+  // Notify opener, try to close popup, and fall back to redirect to the app
   const html = `<!doctype html><meta charset="utf-8" />
-  <script>
-    try { window.opener && window.opener.postMessage({ type: 'recurio:oauth-complete' }, '*'); } catch(e) {}
-    try { window.close(); } catch(e) {}
-    setTimeout(function(){ location.replace(${JSON.stringify(origin)}); }, 800);
-  </script>
-  <p>You can close this window.</p>`;
+<script>
+  try { window.opener && window.opener.postMessage({ type: 'recurio:oauth-complete' }, '*'); } catch(e) {}
+  try { window.close(); } catch(e) {}
+  setTimeout(function(){ location.replace(${JSON.stringify(base)}); }, 600);
+</script>
+<p>You can close this window.</p>`;
 
   const res = new NextResponse(html, {
     headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
   });
+  // Clear state cookie; refresh sid so the opener tab can adopt if needed
   res.cookies.set({ name: "oauth_state", value: "", path: "/", maxAge: 0 });
+  res.cookies.set({ name: "sid", value: sid, httpOnly: true, sameSite: "lax", path: "/" });
   return res;
 }

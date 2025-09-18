@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 "use client";
 import { useEffect, useState } from "react";
 
@@ -53,7 +55,7 @@ export default function Home() {
 
   return (
     <main className="container">
-      <h1>Recurio — barebones v2</h1>
+      <h1>Recurio — barebones v3</h1>
 
       {!connected ? (
         <div className="card">

@@ -33,7 +33,7 @@ export async function GET(req: Request) {
   const workspaceId = await getWorkspaceIdFromToken(tok) || "default";
   const { dbId: rulesDbId } = await ensureManagedContainers(notion, workspaceId);
 
-  // 1) pull active rules
+  // pull active rules
   const rules:any = await notion.databases.query({
     database_id: rulesDbId,
     filter: { property: "Active", checkbox: { equals: true } },
@@ -41,21 +41,14 @@ export async function GET(req: Request) {
   });
 
   let processed = 0, created = 0;
-  const details: Array<{ from: string; to: string; title: string; next: string; movedRule: boolean }> = [];
+  const details: Array<{ from: string; to?: string; title?: string; next?: string; movedRule?: boolean; note?: string }> = [];
 
   for (const r of rules.results) {
     const props = r.properties as any;
 
-    // read rule config + current task id
+    // current pointer + config
     const taskId: string | undefined = props["Task Page ID"]?.rich_text?.[0]?.plain_text;
-    const cfg: {
-      rule: string;
-      byday: string[];
-      interval: number;
-      time: string;
-      tz: string;
-      custom: string;
-    } = {
+    const cfg = {
       rule: props["Rule"]?.select?.name || "Weekly",
       byday: (props["By Day"]?.multi_select || []).map((x: any) => x.name as string),
       interval: props["Interval"]?.number || 1,
@@ -65,9 +58,8 @@ export async function GET(req: Request) {
     };
     if (!taskId) { processed++; continue; }
 
-    // fetch the current task
     const page:any = await notion.pages.retrieve({ page_id: taskId }).catch(()=>null);
-    if (!page) { processed++; continue; }
+    if (!page) { processed++; details.push({ from: taskId, note: "missing page" }); continue; }
 
     const parentDb = page.parent?.database_id;
     const { titleProp, dateProp, doneProp, statusProp } = detectProps(page);
@@ -81,20 +73,18 @@ export async function GET(req: Request) {
     const next = rule.after(new Date(due), true);
     if (!next) { processed++; continue; }
 
-    // avoid duplicates (same Due)
+    // avoid duplicates
     const dup:any = await notion.databases.query({
       database_id: parentDb,
       filter: { property: dateProp!, date: { equals: next.toISOString() } },
       page_size: 1
     });
-    if (dup.results?.length) { processed++; continue; }
+    if (dup.results?.length) { processed++; details.push({ from: taskId, note: "duplicate next exists" }); continue; }
 
     const title = page.properties?.[titleProp]?.title?.[0]?.plain_text || "Untitled";
 
     // create next task with same schema
-    const newProps:any = {
-      [titleProp]: { title: [{ text: { content: title } }] }
-    };
+    const newProps:any = { [titleProp]: { title: [{ text: { content: title } }] } };
     if (dateProp) newProps[dateProp] = { date: { start: next.toISOString() } };
     if (doneProp) newProps[doneProp] = { checkbox: false };
 
@@ -103,34 +93,55 @@ export async function GET(req: Request) {
       properties: newProps
     });
 
-    // try to MOVE rule to the new task (primary path)
+    // --- Move rule pointer and VERIFY ---
     let moved = false;
     try {
       await notion.pages.update({
         page_id: r.id,
-        properties: {
-          "Task Page ID": { rich_text: [{ type: "text", text: { content: newTask.id } }] }
-        }
+        properties: { "Task Page ID": { rich_text: [{ text: { content: newTask.id } }] } }
       });
-      moved = true;
+
+      // verify it stuck
+      const recheck:any = await notion.pages.retrieve({ page_id: r.id });
+      const nowId: string | undefined = recheck.properties?.["Task Page ID"]?.rich_text?.[0]?.plain_text;
+      moved = nowId === newTask.id;
+
+      // if not, create new rule row for the new task and deactivate the old
+      if (!moved) {
+        await notion.pages.create({
+          parent: { database_id: rulesDbId },
+          properties: {
+            "Rule Name": { title: [{ text: { content: `Rule for ${newTask.id.slice(0,6)}` } }] },
+            "Task Page ID": { rich_text: [{ text: { content: newTask.id } }] },
+            "Rule": { select: { name: cfg.rule } },
+            "By Day": { multi_select: (cfg.byday || []).map((n: string) => ({ name: n })) },
+            "Interval": { number: Number(cfg.interval || 1) },
+            "Time": { rich_text: [{ text: { content: cfg.time || "" } }] },
+            "Timezone": { rich_text: [{ text: { content: cfg.tz || "" } }] },
+            "Custom RRULE": { rich_text: [{ text: { content: cfg.custom || "" } }] },
+            "Active": { checkbox: true }
+          }
+        });
+        await notion.pages.update({ page_id: r.id, properties: { "Active": { checkbox: false } } });
+        moved = true;
+      }
     } catch {
-      // fallback: create a fresh rule row for the new task so the series never breaks
+      // hard fallback path (any error during move)
       try {
         await notion.pages.create({
           parent: { database_id: rulesDbId },
           properties: {
             "Rule Name": { title: [{ text: { content: `Rule for ${newTask.id.slice(0,6)}` } }] },
-            "Task Page ID": { rich_text: [{ type: "text", text: { content: newTask.id } }] },
+            "Task Page ID": { rich_text: [{ text: { content: newTask.id } }] },
             "Rule": { select: { name: cfg.rule } },
             "By Day": { multi_select: (cfg.byday || []).map((n: string) => ({ name: n })) },
             "Interval": { number: Number(cfg.interval || 1) },
-            "Time": { rich_text: [{ type: "text", text: { content: cfg.time || "" } }] },
-            "Timezone": { rich_text: [{ type: "text", text: { content: cfg.tz || "" } }] },
-            "Custom RRULE": { rich_text: [{ type: "text", text: { content: cfg.custom || "" } }] },
+            "Time": { rich_text: [{ text: { content: cfg.time || "" } }] },
+            "Timezone": { rich_text: [{ text: { content: cfg.tz || "" } }] },
+            "Custom RRULE": { rich_text: [{ text: { content: cfg.custom || "" } }] },
             "Active": { checkbox: true }
           }
         });
-        // optionally deactivate the old row so you don't see two (comment out if you want to keep history)
         await notion.pages.update({ page_id: r.id, properties: { "Active": { checkbox: false } } });
         moved = true;
       } catch { /* ignore */ }

@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { cookies } from "next/headers";
+import { cookies as getCookies } from "next/headers";
 import { noStoreJson, noStoreRedirect } from "../../_http";
 import { redisSet } from "../../_utils";
 
@@ -10,8 +10,8 @@ export async function GET(req: Request) {
   const u = new URL(req.url);
   const code = u.searchParams.get("code");
   const inboundState = u.searchParams.get("state");
-  const stateCookie = cookies().get("oauth_state")?.value;
-  const sid = cookies().get("sid")?.value;
+  const sid = (await getCookies()).get("sid")?.value
+  const sid = (await getCookies()).get("sid")?.value
 
   if (!code || !inboundState || !stateCookie || inboundState !== stateCookie || !sid) {
     return noStoreJson({ ok:false, error:"Bad OAuth state" }, 400);

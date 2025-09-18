@@ -20,12 +20,7 @@ export async function GET(req: Request) {
   if (!code || !inboundState || !stateCookie || inboundState !== stateCookie || !sid) {
     return new NextResponse(JSON.stringify({ ok: false, error: "Bad OAuth state" }), {
       status: 400,
-      headers: {
-        "Content-Type": "application/json",
-        "Cache-Control": "no-store",
-        "Pragma": "no-cache",
-        "Expires": "0",
-      },
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
     });
   }
 
@@ -47,12 +42,7 @@ export async function GET(req: Request) {
     const t = await tokenRes.text().catch(() => "");
     return new NextResponse(JSON.stringify({ ok: false, error: `Token exchange failed: ${t || tokenRes.status}` }), {
       status: 400,
-      headers: {
-        "Content-Type": "application/json",
-        "Cache-Control": "no-store",
-        "Pragma": "no-cache",
-        "Expires": "0",
-      },
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
     });
   }
 
@@ -60,24 +50,17 @@ export async function GET(req: Request) {
   await redisSet(`tok:${sid}`, tok);
   await redisSet("tok:latest", tok);
 
-  // Clear state cookie
-  const clear = new NextResponse(
-    `<!doctype html><meta charset="utf-8" />
-    <script>
-      try { window.opener && window.opener.postMessage({ type: 'recurio:oauth-complete' }, '*'); } catch(e) {}
-      try { window.close(); } catch(e) {}
-      setTimeout(function(){ location.replace(${JSON.stringify(origin)}); }, 800);
-    </script>
-    <p>You can close this window.</p>`,
-    {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store",
-        "Pragma": "no-cache",
-        "Expires": "0",
-      },
-    }
-  );
-  clear.cookies.set({ name: "oauth_state", value: "", path: "/", maxAge: 0 });
-  return clear;
+  const html = `<!doctype html><meta charset="utf-8" />
+  <script>
+    try { window.opener && window.opener.postMessage({ type: 'recurio:oauth-complete' }, '*'); } catch(e) {}
+    try { window.close(); } catch(e) {}
+    setTimeout(function(){ location.replace(${JSON.stringify(origin)}); }, 800);
+  </script>
+  <p>You can close this window.</p>`;
+
+  const res = new NextResponse(html, {
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+  });
+  res.cookies.set({ name: "oauth_state", value: "", path: "/", maxAge: 0 });
+  return res;
 }

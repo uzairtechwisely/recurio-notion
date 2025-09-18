@@ -11,7 +11,22 @@ export async function GET() {
     `?client_id=${clientId}&response_type=code&owner=user&redirect_uri=${redirectUri}&state=${state}`;
 
   const res = NextResponse.redirect(url);
-  res.cookies.set("oauth_state", state, { httpOnly: true, sameSite: "Lax", path: "/" });
-  res.cookies.set("sid", nanoid(), { httpOnly: true, sameSite: "Lax", path: "/" });
+
+  // Use the single-options signature + lowercase sameSite
+  res.cookies.set({
+    name: "oauth_state",
+    value: state,
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/"
+  });
+  res.cookies.set({
+    name: "sid",
+    value: nanoid(),
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/"
+  });
+
   return res;
 }

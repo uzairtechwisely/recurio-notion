@@ -1,4 +1,3 @@
-
 "use client";
 import { useEffect, useState } from "react";
 
@@ -8,13 +7,11 @@ type Task = { id: string; name: string; due: string | null; done: boolean; paren
 export default function Home() {
   const [connected, setConnected] = useState(false);
   const [dbs, setDbs] = useState<Db[]>([]);
-  const [dbId, setDbId] = useState<string>("");
+  const [dbId, setDbId] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [taskId, setTaskId] = useState<string>("");
+  const [taskId, setTaskId] = useState("");
 
-  useEffect(() => {
-    fetch("/api/me").then(r => r.json()).then(d => setConnected(!!d.connected));
-  }, []);
+  useEffect(() => { fetch("/api/me").then(r => r.json()).then(d => setConnected(!!d.connected)); }, []);
 
   async function connect() {
     window.open("/api/oauth/start", "notionAuth", "width=480,height=720");
@@ -53,17 +50,20 @@ export default function Home() {
   }
 
   return (
-    <main className="container">
+    <main style={{maxWidth:840, margin:"32px auto", padding:"0 16px", fontFamily:"system-ui, Arial"}}>
       <h1>Recurio — barebones v3</h1>
 
       {!connected ? (
-        <div className="card">
+        <div style={{border:"1px solid #111", padding:12, margin:"12px 0"}}>
           <p>Connect your Notion workspace to continue.</p>
           <button onClick={connect}>Connect Notion</button>
+          <div style={{marginTop:8}}>
+            <a href="/api/oauth/start" target="_blank" rel="noreferrer">Open OAuth in new tab</a>
+          </div>
         </div>
       ) : (
         <>
-          <div className="card">
+          <div style={{border:"1px solid #111", padding:12, margin:"12px 0"}}>
             <button onClick={loadDbs}>Refresh Databases</button>
             {dbs.length === 0 && (
               <p style={{marginTop:8}}>
@@ -81,7 +81,7 @@ export default function Home() {
           </div>
 
           {dbId && (
-            <div className="card">
+            <div style={{border:"1px solid #111", padding:12, margin:"12px 0"}}>
               <h2>Tasks</h2>
               <ul>
                 {tasks.map(t => (
@@ -101,9 +101,7 @@ export default function Home() {
                   <div style={{display:"grid", gap:8, gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))"}}>
                     <label>Rule
                       <select name="rule" defaultValue="Weekly">
-                        <option>Daily</option><option>Weekly</option>
-                        <option>Monthly</option><option>Yearly</option>
-                        <option>Custom</option>
+                        <option>Daily</option><option>Weekly</option><option>Monthly</option><option>Yearly</option><option>Custom</option>
                       </select>
                     </label>
                     <label>By Day (MO,WE,FR)
@@ -124,7 +122,7 @@ export default function Home() {
                   </div>
                   <div style={{marginTop:10, display:"flex", gap:8}}>
                     <button type="submit">Make recurring</button>
-                    <button type="button" onClick={runNow}>Run now</button>
+                    <button type="button" onClick={runNow}>Sync now</button>
                   </div>
                 </form>
               )}

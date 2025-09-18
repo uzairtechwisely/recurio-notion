@@ -11,7 +11,7 @@ export async function GET() {
   return noStoreJson({
     sid: sid || null,
     token_present: !!tok?.access_token,
-    source,                 // "sid" | "adopted-latest" | "none"
+    source,                  // "sid" | "adopted-latest"(only if enabled) | "none"
     workspace_id: tok?.workspace_id || null,
     bot_id: tok?.bot_id || null,
   });

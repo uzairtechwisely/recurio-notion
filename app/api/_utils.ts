@@ -1,7 +1,7 @@
 import { Client } from "@notionhq/client";
 import { RRule, rrulestr } from "rrule";
 
-// Upstash via REST
+// Upstash (REST)
 const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL!;
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN!;
 
@@ -34,7 +34,7 @@ export function notionClient(token: string) {
   return new Client({ auth: token });
 }
 
-// ---- Recurrence helpers ----
+// ----- RRULE helpers
 export function buildRRule(input: {
   rule: string; byday?: string[]; interval?: number; time?: string; custom?: string;
 }) {
@@ -52,39 +52,38 @@ export function buildRRule(input: {
   return new RRule(opts);
 }
 
-// ---- Workspace + Rules DB management ----
+// ----- Workspace + Rules DB
 export async function getWorkspaceIdFromToken(tok: any): Promise<string|null> {
-  // Notion OAuth token usually includes workspace_id
-  if (tok?.workspace_id) return tok.workspace_id as string;
-  return null;
+  return tok?.workspace_id || null;
 }
 
 export async function ensureManagedContainers(notion: Client, workspaceId: string): Promise<{ pageId: string, dbId: string }> {
-  // cache ids in Redis
   const cachedDb = await redisGet<string>(`rulesdb:${workspaceId}`);
   const cachedPage = await redisGet<string>(`managedpage:${workspaceId}`);
-  if (cachedDb && cachedPage) return { pageId: cachedPage, dbId: cachedDb };
 
-  // 1) Create (or re-use) a parent page for managed assets
-  const pageId = cachedPage || await (async () => {
+  let pageId = cachedPage || "";
+  let dbId   = cachedDb   || "";
+
+  if (!pageId) {
     const p:any = await notion.pages.create({
       parent: { type: "workspace", workspace: true } as any,
       icon: { type: "emoji", emoji: "🗂️" },
       properties: { title: { title: [{ text: { content: "Techwisely (Managed)" } }] } }
     } as any);
-    await redisSet(`managedpage:${workspaceId}`, p.id);
-    return p.id as string;
-  })();
+    pageId = p.id;
+    await redisSet(`managedpage:${workspaceId}`, pageId);
+  }
 
-  // 2) Create the Rules DB if missing
-  const dbId = cachedDb || await (async () => {
+  if (!dbId) {
     const db:any = await notion.databases.create({
       parent: { type: "page_id", page_id: pageId },
       icon: { type: "emoji", emoji: "🔁" },
       title: [{ type: "text", text: { content: "Recurrence Rules (Managed)" } }],
       properties: {
         "Rule Name": { title: {} },
-        "Task Page": { relation: { database_id: "placeholder", single_property: {} } } as any, // will patch below
+        // We *also* keep a relation if you later want it, but we’ll rely on Task Page ID text for robustness.
+        "Task Page": { relation: { database_id: "00000000-0000-0000-0000-000000000000" } as any },
+        "Task Page ID": { rich_text: {} },
         "Rule": { select: { options: [
           { name: "Daily" }, { name: "Weekly" }, { name: "Monthly" }, { name: "Yearly" }, { name: "Custom" }
         ]}},
@@ -96,12 +95,18 @@ export async function ensureManagedContainers(notion: Client, workspaceId: strin
         "Active": { checkbox: {} }
       }
     } as any);
-
-    // Patch relation target after creation (Notion quirk avoided by users linking via UI; we can't know target DB here)
-    // We'll set the relation target per-rule when creating pages via the 'rollup' style; for now we keep relation prop defined.
-    await redisSet(`rulesdb:${workspaceId}`, db.id);
-    return db.id as string;
-  })();
+    dbId = db.id;
+    await redisSet(`rulesdb:${workspaceId}`, dbId);
+  } else {
+    // ensure Task Page ID exists on existing DB
+    const db:any = await notion.databases.retrieve({ database_id: dbId });
+    if (!db.properties?.["Task Page ID"]) {
+      await notion.databases.update({
+        database_id: dbId,
+        properties: { "Task Page ID": { rich_text: {} } as any }
+      } as any);
+    }
+  }
 
   return { pageId, dbId };
 }

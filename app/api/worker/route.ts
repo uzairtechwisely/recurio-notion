@@ -41,7 +41,7 @@ export async function GET(req: Request) {
   });
 
   let processed = 0, created = 0;
-  const details: Array<{ from: string; to?: string; title?: string; ?: string; movedRule?: boolean; note?: string }> = [];
+  const details: Array<{ from: string; to?: string; title?: string; next?: string; movedRule?: boolean; note?: string }> = [];
 
   for (const r of rules.results) {
     const props = r.properties as any;
@@ -68,39 +68,38 @@ export async function GET(req: Request) {
 
     if (!parentDb || !due || !done) { processed++; continue; }
 
-   // ---- compute next due (strictly after current due) ----
-const dueStr = String(due);
-const anchor = new Date(dueStr);
+    // ---- compute next due (STRICTLY after current due) ----
+    const dueStr = String(due);
+    const anchor = new Date(dueStr);
+    const rr = buildRRule(cfg);
+    const next = rr.after(anchor, false); // false => strictly after; never same occurrence
+    if (!next) { processed++; continue; }
 
-// IMPORTANT: 'false' = strictly after, never the same occurrence
-const next = rule.after(anchor, false);
-if (!next) { processed++; continue; }
+    // preserve date-only vs datetime formatting
+    const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(dueStr);
+    const nextValue = isDateOnly ? next.toISOString().slice(0, 10) : next.toISOString();
 
-// keep the same style as the original field (date-only vs date-time)
-const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(dueStr);
-const nextValue = isDateOnly ? next.toISOString().slice(0, 10) : next.toISOString();
+    // ---- avoid duplicates for that exact next value ----
+    const dup:any = await notion.databases.query({
+      database_id: parentDb,
+      filter: { property: dateProp!, date: { equals: nextValue } },
+      page_size: 1
+    });
+    if (dup.results?.length) { processed++; details.push({ from: taskId, note: "duplicate next exists" }); continue; }
 
-// ---- avoid duplicates in DB for that next date ----
-const dup: any = await notion.databases.query({
-  database_id: parentDb,
-  filter: { property: dateProp!, date: { equals: nextValue } },
-  page_size: 1
-});
-if (dup.results?.length) { processed++; details.push({ from: taskId, note: "duplicate next exists" }); continue; }
+    const title = page.properties?.[titleProp]?.title?.[0]?.plain_text || "Untitled";
 
-// ---- create next task, preserving schema and date format ----
-const title = page.properties?.[titleProp]?.title?.[0]?.plain_text || "Untitled";
-const newProps: any = { [titleProp]: { title: [{ text: { content: title } }] } };
-if (dateProp) newProps[dateProp] = { date: { start: nextValue } };
-if (doneProp) newProps[doneProp] = { checkbox: false };
+    // ---- create next task with same schema ----
+    const newProps:any = { [titleProp]: { title: [{ text: { content: title } }] } };
+    if (dateProp) newProps[dateProp] = { date: { start: nextValue } };
+    if (doneProp) newProps[doneProp] = { checkbox: false };
 
-const newTask: any = await notion.pages.create({
-  parent: { database_id: parentDb },
-  properties: newProps
-});
+    const newTask:any = await notion.pages.create({
+      parent: { database_id: parentDb },
+      properties: newProps
+    });
 
-
-    // --- Move rule pointer and VERIFY ---
+    // ---- move rule pointer and VERIFY ----
     let moved = false;
     try {
       await notion.pages.update({
@@ -108,12 +107,10 @@ const newTask: any = await notion.pages.create({
         properties: { "Task Page ID": { rich_text: [{ text: { content: newTask.id } }] } }
       });
 
-      // verify it stuck
       const recheck:any = await notion.pages.retrieve({ page_id: r.id });
       const nowId: string | undefined = recheck.properties?.["Task Page ID"]?.rich_text?.[0]?.plain_text;
       moved = nowId === newTask.id;
 
-      // if not, create new rule row for the new task and deactivate the old
       if (!moved) {
         await notion.pages.create({
           parent: { database_id: rulesDbId },
@@ -133,7 +130,6 @@ const newTask: any = await notion.pages.create({
         moved = true;
       }
     } catch {
-      // hard fallback path (any error during move)
       try {
         await notion.pages.create({
           parent: { database_id: rulesDbId },
@@ -155,7 +151,7 @@ const newTask: any = await notion.pages.create({
     }
 
     created++; processed++;
-    details.push({ from: taskId, to: newTask.id, title, next: next.toISOString(), movedRule: moved });
+    details.push({ from: taskId, to: newTask.id, title, next: nextValue, movedRule: moved });
   }
 
   return NextResponse.json({ processed, created, details });

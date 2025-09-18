@@ -11,34 +11,41 @@ export default function Home() {
   const [dbId, setDbId] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskId, setTaskId] = useState("");
-  const [syncResult, setSyncResult] = useState<null | { processed:number; created:number; details:any[] }>(null);
+
+  const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [syncResult, setSyncResult] = useState<null | { processed:number; created:number; details?: any[] }>(null);
 
   async function checkStatus() {
     setChecking(true);
-    const d = await (await fetch("/api/me")).json();
+    setNotice(null);
+    const d = await (await fetch("/api/me", { cache: "no-store" })).json();
     setConnected(!!d.connected);
     setChecking(false);
     if (d.connected) loadDbs();
   }
   useEffect(() => { checkStatus(); }, []);
 
-  async function connect() {
+  function connect() {
     window.open("/api/oauth/start", "notionAuth", "width=480,height=720");
     const t = setInterval(async () => {
-      const d = await (await fetch("/api/me")).json();
+      const d = await (await fetch("/api/me", { cache: "no-store" })).json();
       if (d.connected) { clearInterval(t); setConnected(true); await loadDbs(); }
     }, 1500);
   }
 
   async function loadDbs() {
-    const r = await fetch("/api/databases");
+    setNotice(null);
+    const r = await fetch("/api/databases", { cache: "no-store" });
     const d = await r.json();
     setDbs(d.databases || []);
   }
 
   async function openDb(id: string) {
     setDbId(id);
-    const r = await fetch(`/api/tasks?db=${encodeURIComponent(id)}`);
+    setNotice(null);
+    const r = await fetch(`/api/tasks?db=${encodeURIComponent(id)}`, { cache: "no-store" });
     const d = await r.json();
     setTasks(d.tasks || []);
     setTaskId("");
@@ -46,22 +53,60 @@ export default function Home() {
 
   async function saveRule(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const fd = new FormData(e.currentTarget);
-    const body = Object.fromEntries(fd.entries());
-    const res = await fetch("/api/rules", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    const j = await res.json();
-    alert(j.ok ? "Recurring set (saved to Rules DB)." : j.error || "Failed");
+    setNotice(null);
+    setSyncResult(null);
+
+    if (!taskId) { setNotice("Please select a task first."); return; }
+    setSaving(true);
+    try {
+      const fd = new FormData(e.currentTarget);
+      const body = Object.fromEntries(fd.entries());
+      const res = await fetch("/api/rules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const text = await res.text();
+      let j: any = {};
+      try { j = JSON.parse(text); } catch { /* non-JSON error */ }
+      if (!res.ok || j.ok === false) {
+        setNotice(j.error || text || "Failed to save rule.");
+      } else {
+        setNotice("✅ Rule saved to ‘Recurrence Rules (Managed)’. Mark the task Done in Notion, then click Sync now.");
+      }
+    } catch (err: any) {
+      setNotice(err?.message || "Network error while saving rule.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function runNow() {
+    setNotice(null);
     setSyncResult(null);
-    const r = await fetch("/api/worker");
-    const d = await r.json();
-    setSyncResult(d);
+    setSyncing(true);
+    try {
+      const res = await fetch("/api/worker", { cache: "no-store" });
+      const text = await res.text();
+      let j: any = {};
+      try { j = JSON.parse(text); } catch { /* non-JSON */ }
+      if (!res.ok) {
+        setNotice(j?.error || text || "Sync failed.");
+      } else {
+        setSyncResult(j);
+        if (j?.created > 0) {
+          setNotice(`✅ Synced. Created ${j.created} next task(s). The rule now points to the new task.`);
+          // refresh the current DB view to show the new row
+          if (dbId) openDb(dbId);
+        } else {
+          setNotice("Synced. Nothing to create (is the task marked Done and has a Due date?).");
+        }
+      }
+    } catch (err: any) {
+      setNotice(err?.message || "Network error while syncing.");
+    } finally {
+      setSyncing(false);
+    }
   }
 
   return (
@@ -81,17 +126,24 @@ export default function Home() {
         <button onClick={checkStatus} style={{marginLeft:"auto"}}>Check status</button>
       </div>
 
-      {/* Sync result panel */}
-      {syncResult && (
+      {/* Notice / errors */}
+      {notice && (
         <div style={{border:"1px solid #111", padding:12, margin:"12px 0", background:"#f9f9f9"}}>
+          {notice}
+        </div>
+      )}
+
+      {/* Sync result details */}
+      {syncResult && (
+        <div style={{border:"1px solid #111", padding:12, margin:"12px 0"}}>
           <b>Sync result:</b> processed {syncResult.processed}, created {syncResult.created}
-          {syncResult.details?.length ? (
+          {Array.isArray(syncResult.details) && syncResult.details.length > 0 && (
             <ul style={{marginTop:6}}>
               {syncResult.details.map((it, i) => (
                 <li key={i}><small>Created next for <code>{it.title}</code> → due {new Date(it.next).toLocaleString()}</small></li>
               ))}
             </ul>
-          ) : null}
+          )}
         </div>
       )}
 
@@ -126,38 +178,36 @@ export default function Home() {
             ))}
           </ul>
 
-          {taskId && (
-            <form onSubmit={saveRule} style={{marginTop:12}}>
-              <input type="hidden" name="taskPageId" value={taskId} />
-              <input type="hidden" name="dbId" value={dbId} />
-              <div style={{display:"grid", gap:8, gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))"}}>
-                <label>Rule
-                  <select name="rule" defaultValue="Weekly">
-                    <option>Daily</option><option>Weekly</option><option>Monthly</option><option>Yearly</option><option>Custom</option>
-                  </select>
-                </label>
-                <label>By Day (MO,WE,FR)
-                  <input name="byday" placeholder="optional"/>
-                </label>
-                <label>Interval
-                  <input type="number" name="interval" defaultValue="1"/>
-                </label>
-                <label>Time (HH:mm)
-                  <input name="time" placeholder="17:00"/>
-                </label>
-                <label>Timezone
-                  <input name="tz" placeholder="Europe/London"/>
-                </label>
-                <label>Custom RRULE
-                  <input name="custom" placeholder="if Rule = Custom"/>
-                </label>
-              </div>
-              <div style={{marginTop:10, display:"flex", gap:8}}>
-                <button type="submit">Make recurring</button>
-                <button type="button" onClick={runNow}>Sync now</button>
-              </div>
-            </form>
-          )}
+          <form onSubmit={saveRule} style={{marginTop:12}}>
+            <input type="hidden" name="taskPageId" value={taskId} />
+            <input type="hidden" name="dbId" value={dbId} />
+            <div style={{display:"grid", gap:8, gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))"}}>
+              <label>Rule
+                <select name="rule" defaultValue="Weekly">
+                  <option>Daily</option><option>Weekly</option><option>Monthly</option><option>Yearly</option><option>Custom</option>
+                </select>
+              </label>
+              <label>By Day (MO,WE,FR)
+                <input name="byday" placeholder="optional"/>
+              </label>
+              <label>Interval
+                <input type="number" name="interval" defaultValue="1"/>
+              </label>
+              <label>Time (HH:mm)
+                <input name="time" placeholder="17:00"/>
+              </label>
+              <label>Timezone
+                <input name="tz" placeholder="Europe/London"/>
+              </label>
+              <label>Custom RRULE
+                <input name="custom" placeholder="if Rule = Custom"/>
+              </label>
+            </div>
+            <div style={{marginTop:10, display:"flex", gap:8}}>
+              <button type="submit" disabled={saving}>{saving ? "Saving..." : "Make recurring"}</button>
+              <button type="button" onClick={runNow} disabled={syncing}>{syncing ? "Syncing..." : "Sync now"}</button>
+            </div>
+          </form>
         </div>
       )}
     </main>

@@ -2,6 +2,27 @@
 
 import React, { useEffect, useRef, useState } from "react";
 
+// --- helpers: SID + API wrapper + OAuth handoff glue ---
+
+function readCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return m ? decodeURIComponent(m[1]) : null;
+}
+function writeCookie(name: string, value: string, days = 365) {
+  if (typeof document === "undefined") return;
+  const d = new Date();
+  d.setTime(d.getTime() + days * 864e5);
+  document.cookie =
+    `${name}=${encodeURIComponent(value)}; Expires=${d.toUTCString()}; Path=/; SameSite=Lax`;
+}
+function genSid(n = 21) {
+  const abc = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  let s = "";
+  for (let i = 0; i < n; i++) s += abc[Math.floor(Math.random() * abc.length)];
+  return s;
+}
+
 /* ---------------- small UI helpers ---------------- */
 function clsx(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
@@ -139,13 +160,32 @@ type Task = {
 /** We’ll add this header when present so API works inside Notion iframe without cookies. */
 const sidRef: { current: string | null } = { current: null };
 
-/* ---------------- fetch helper ---------------- */
+/* ---------------- SID + fetch helpers (minimal changes) ---------------- */
+
+let SID: string | null = null;
+
+/** Ensure there is a SID for this tab/iframe. No network, no recursion. */
+async function ensureSid(): Promise<string> {
+  if (SID) return SID;
+  let s = readCookie("sid");
+  if (!s) {
+    s = genSid();
+    writeCookie("sid", s);
+  }
+  SID = s;
+  sidRef.current = s; // keep old callers that look at sidRef working
+  return s;
+}
+
+/** JSON fetch that ALWAYS sends x-recurio-sid (works in iframe/cookie-less). */
 async function j<T = any>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     "content-type": "application/json",
     ...(init?.headers as Record<string, string> | undefined),
   };
-  if (sidRef.current) headers["x-recurio-sid"] = sidRef.current; // <<< critical for iframe
+  const sid = await ensureSid();
+  headers["x-recurio-sid"] = sid;
+
   const res = await fetch(input.toString(), {
     credentials: "include",
     cache: "no-store",
@@ -159,6 +199,14 @@ async function j<T = any>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const ct = res.headers.get("content-type") || "";
   if (!ct.includes("application/json")) return {} as T;
   return (await res.json()) as T;
+}
+
+/** Keep your existing api() wrapper for places where you expect a Response object. */
+async function api(path: string, init: RequestInit = {}) {
+  const sid = await ensureSid();
+  const headers = new Headers(init.headers || {});
+  headers.set("x-recurio-sid", sid);
+  return fetch(path, { ...init, headers, cache: "no-store", credentials: "include" });
 }
 
 /* ---------------- main component ---------------- */
@@ -199,36 +247,54 @@ export default function Page() {
     });
   };
 
-  // Auto-adopt a connection if ?c=<connId> is in the URL (works in iframe or normal)
-useEffect(() => {
-  const url = new URL(window.location.href);
-  const cid = url.searchParams.get("c");
-  if (!cid) return;
-
-  (async () => {
-    try {
-      setStatus("Connecting…");
-      await fetch(`/api/session/adopt-connection?c=${encodeURIComponent(cid)}`, {
-        method: "POST",
-        headers: { "x-recurio-sid": (document.cookie.match(/(?:^|; )sid=([^;]+)/)?.[1] || "") },
-        cache: "no-store",
-      });
-    } catch {}
-    // After adoption, refresh as usual
-    try {
-      const ok = await refreshConnection();
-      if (ok) {
-        await refreshDatabases();
-        setStatus("Connected ✅");
-      } else {
-        setStatus("Connected, but couldn’t fetch /me");
+  // Listen for OAuth handoff from /oauth/done
+  React.useEffect(() => {
+    async function onMsg(e: MessageEvent) {
+      const data = e?.data || {};
+      if (data?.type === "RECURIO_OAUTH" && data?.handoff) {
+        try {
+          // Adopt the Notion token for THIS SID
+          await api(`/api/session/adopt?h=${encodeURIComponent(data.handoff)}`, { method: "POST" });
+          // Re-check connection, then refresh DBs/tasks like you already do
+          if (typeof refreshConnection === "function") await refreshConnection();
+          if (typeof refreshDatabases === "function") await refreshDatabases();
+        } catch {}
       }
-    } catch {
-      setStatus("Connected, but refresh failed");
     }
-  })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, []);
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+
+  // Auto-adopt a connection if ?c=<connId> is in the URL (works in iframe or normal)
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const cid = url.searchParams.get("c");
+    if (!cid) return;
+
+    (async () => {
+      try {
+        setStatus("Connecting…");
+        await fetch(`/api/session/adopt-connection?c=${encodeURIComponent(cid)}`, {
+          method: "POST",
+          headers: { "x-recurio-sid": (document.cookie.match(/(?:^|; )sid=([^;]+)/)?.[1] || "") },
+          cache: "no-store",
+        });
+      } catch {}
+      // After adoption, refresh as usual
+      try {
+        const ok = await refreshConnection();
+        if (ok) {
+          await refreshDatabases();
+          setStatus("Connected ✅");
+        } else {
+          setStatus("Connected, but couldn’t fetch /me");
+        }
+      } catch {
+        setStatus("Connected, but refresh failed");
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /* ----- OAuth handoff: message & URL param (iframe safe) ----- */
   useEffect(() => {
@@ -396,7 +462,7 @@ useEffect(() => {
     setStatus("Saving rule…");
     try {
       const body = { taskId, rule, byday, interval, time, tz, custom };
-      const res = await fetch("/api/rules", {
+      const res = await api("/api/rules", {
         method: "POST",
         credentials: "include",
         cache: "no-store",

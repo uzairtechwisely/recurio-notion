@@ -2,11 +2,10 @@
 
 import React, { useEffect, useRef, useState } from "react";
 
-/* --------- tiny helpers --------- */
+/* ---------------- small UI helpers ---------------- */
 function clsx(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
-
 function OutlineBtn(
   props: React.ButtonHTMLAttributes<HTMLButtonElement> & { pressed?: boolean }
 ) {
@@ -27,7 +26,6 @@ function OutlineBtn(
     />
   );
 }
-
 function Banner({ msg }: { msg: string }) {
   if (!msg) return null;
   return (
@@ -45,12 +43,10 @@ function Banner({ msg }: { msg: string }) {
     </div>
   );
 }
-
-/* --------- accessible tooltip that works in Notion iframe --------- */
+/* Accessible help tooltip—works inside Notion iframe */
 function Help({ title }: { title: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
       if (!ref.current) return;
@@ -66,12 +62,8 @@ function Help({ title }: { title: React.ReactNode }) {
       document.removeEventListener("keydown", onKey);
     };
   }, []);
-
   return (
-    <div
-      ref={ref}
-      style={{ position: "relative", display: "inline-block", overflow: "visible" }}
-    >
+    <div ref={ref} style={{ position: "relative", display: "inline-block", overflow: "visible" }}>
       <button
         type="button"
         aria-haspopup="dialog"
@@ -128,26 +120,37 @@ function Help({ title }: { title: React.ReactNode }) {
   );
 }
 
-/* --------- types --------- */
+/* ---------------- types ---------------- */
 type Db = { id: string; title: string };
 type Task = {
   id: string;
   name: string;
   due: string | null;
   hasRule: boolean;
+  /** NEW: if the API returns a short rule label, we’ll display it (else fallback text) */
+  ruleSummary?: string | null;
   overdue: boolean;
   done?: boolean;
   parentDb?: string;
   created?: string;
 };
 
-/* --------- fetch helper --------- */
+/* ---------------- iframe session fallback ---------------- */
+/** We’ll add this header when present so API works inside Notion iframe without cookies. */
+const sidRef: { current: string | null } = { current: null };
+
+/* ---------------- fetch helper ---------------- */
 async function j<T = any>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  if (sidRef.current) headers["x-recurio-sid"] = sidRef.current; // <<< critical for iframe
   const res = await fetch(input.toString(), {
     credentials: "include",
     cache: "no-store",
     ...(init || {}),
-    headers: { "content-type": "application/json", ...(init?.headers || {}) },
+    headers,
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
@@ -158,9 +161,7 @@ async function j<T = any>(input: RequestInfo, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-/* ===========================
-   Main Page
-   =========================== */
+/* ---------------- main component ---------------- */
 export default function Page() {
   // connection
   const [connected, setConnected] = useState(false);
@@ -174,9 +175,8 @@ export default function Page() {
   const [taskId, setTaskId] = useState<string | null>(null);
 
   // rule form
-  const [rule, setRule] = useState<"Daily" | "Weekly" | "Monthly" | "Yearly" | "Custom">(
-    "Weekly"
-  );
+  const [rule, setRule] =
+    useState<"Daily" | "Weekly" | "Monthly" | "Yearly" | "Custom">("Weekly");
   const [interval, setInterval] = useState<number>(1);
   const [byday, setByday] = useState<string>("MO,TU,WE,TH,FR");
   const [time, setTime] = useState<string>("");
@@ -199,9 +199,9 @@ export default function Page() {
     });
   };
 
-  /* ----- OAuth handoff (iframe-safe) ----- */
+  /* ----- OAuth handoff: message & URL param (iframe safe) ----- */
   useEffect(() => {
-    // URL fallback (?handoff=...)
+    // URL handoff (?handoff=...)
     const url = new URL(window.location.href);
     const h = url.searchParams.get("handoff");
     (async () => {
@@ -211,7 +211,7 @@ export default function Page() {
             method: "POST",
             credentials: "include",
             cache: "no-store",
-          });
+          }).then((r) => r.json()).then((j) => { if (j?.sid) sidRef.current = j.sid; });
         } catch {}
         url.searchParams.delete("handoff");
         window.history.replaceState({}, "", url.toString());
@@ -220,19 +220,10 @@ export default function Page() {
       }
     })();
 
-    // postMessage from /api/oauth/done broadcaster
+    // postMessage from /api/oauth/done
     async function onMsg(e: MessageEvent) {
       if (e?.data?.type === "recurio:oauth-complete") {
-        const hh = e?.data?.handoff;
-        if (hh) {
-          try {
-            await fetch(`/api/session/adopt?h=${encodeURIComponent(hh)}`, {
-              method: "POST",
-              credentials: "include",
-              cache: "no-store",
-            });
-          } catch {}
-        }
+        if (e.data.sid) sidRef.current = String(e.data.sid);
         setStatus("Connected. Loading…");
         await refreshConnection();
         await refreshDatabases();
@@ -258,7 +249,6 @@ export default function Page() {
       return false;
     }
   }
-
   async function refreshDatabases() {
     setStatus("Loading databases…");
     try {
@@ -273,7 +263,6 @@ export default function Page() {
       setStatus("Failed to load databases.");
     }
   }
-
   async function openDb(id: string) {
     setDbId(id);
     setTaskId(null);
@@ -289,9 +278,22 @@ export default function Page() {
 
   /* ----- actions ----- */
   function openConnectPopup() {
-  // IMPORTANT: no "noopener" or "noreferrer" so window.opener is available for postMessage
-  window.open("/api/oauth/start", "recurio-oauth", "width=600,height=750");
-}
+    // keep window.opener so /api/oauth/done can postMessage back
+    window.open("/api/oauth/start", "recurio-oauth", "width=600,height=750");
+    // fallback polling for 15s (helps if postMessage is blocked by sandbox)
+    let tries = 0;
+    const iv = window.setInterval(async () => {
+      tries++;
+      const me = await j<any>("/api/me").catch(() => null);
+      if (me?.connected || tries > 30) {
+        window.clearInterval(iv);
+        if (me?.connected) {
+          setStatus("Connected. Loading…");
+          await refreshDatabases();
+        }
+      }
+    }, 500);
+  }
 
   async function onDisconnect() {
     setInlineError((p) => ({ ...p, disconnect: null }));
@@ -303,12 +305,12 @@ export default function Page() {
       setDbId(null);
       setTasks([]);
       setTaskId(null);
+      sidRef.current = null;
       setStatus("Disconnected. You can connect a different Notion account now.");
     } catch {
       setInlineError((p) => ({ ...p, disconnect: "Could not clear session. Try refresh." }));
     }
   }
-
   async function onResetManaged(mode?: "archive") {
     setInlineError((p) => ({ ...p, reset: null }));
     setStatus(mode === "archive" ? "Archiving all rules…" : "Ensuring managed assets…");
@@ -317,6 +319,7 @@ export default function Page() {
         method: "POST",
         credentials: "include",
         cache: "no-store",
+        headers: sidRef.current ? { "x-recurio-sid": sidRef.current } : undefined,
       });
       if (!res.ok) throw new Error(await res.text());
       setStatus("Managed assets are ready.");
@@ -329,7 +332,6 @@ export default function Page() {
       setStatus("Failed to prepare managed assets.");
     }
   }
-
   async function onSyncNow() {
     if (!connected) {
       setInlineError((p) => ({ ...p, sync: "Connect Notion first." }));
@@ -354,7 +356,6 @@ export default function Page() {
       setInlineError((p) => ({ ...p, sync: "Sync failed. Check DB sharing and try again." }));
     }
   }
-
   async function onMakeRecurring() {
     if (!taskId) {
       setInlineError((p) => ({ ...p, recur: "Select a task first." }));
@@ -369,7 +370,10 @@ export default function Page() {
         credentials: "include",
         cache: "no-store",
         body: JSON.stringify(body),
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          ...(sidRef.current ? { "x-recurio-sid": sidRef.current } : {}),
+        },
       });
       const js = await res.json().catch(() => ({}));
       if (!res.ok || js?.ok === false) throw new Error(js?.error || "save_rule_failed");
@@ -384,7 +388,7 @@ export default function Page() {
     }
   }
 
-  // initial ping
+  // initial
   useEffect(() => {
     refreshConnection().then((ok) => {
       if (ok) refreshDatabases();
@@ -392,7 +396,7 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* ----- render ----- */
+  /* ---------------- render ---------------- */
   return (
     <main
       style={{
@@ -439,7 +443,7 @@ export default function Page() {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8, overflow: "visible" }}>
-          <OutlineBtn onClick={() => openConnectPopup()}>Connect Notion</OutlineBtn>
+          <OutlineBtn onClick={openConnectPopup}>Connect Notion</OutlineBtn>
           <Help title="Opens Notion OAuth in a popup/tab. Approve access; this dashboard will auto-refresh (works inside Notion iframe too)." />
         </div>
         <div
@@ -494,7 +498,7 @@ export default function Page() {
           <Help title="For each ‘done’ task with a rule, creates the next one and carries the rule forward." />
         </div>
 
-        {/* inline error rows */}
+        {/* inline errors row */}
         <div style={{ minHeight: 18, color: "#b00020", fontSize: 12 }}>{inlineError.reset}</div>
         <div style={{ minHeight: 18, color: "#b00020", fontSize: 12, textAlign: "right" }}>
           {inlineError.sync}
@@ -568,6 +572,7 @@ export default function Page() {
                   />{" "}
                   <b>{t.name}</b> &nbsp; <small>Due: {fmt(t.due)}</small>
                 </label>
+
                 {t.overdue && (
                   <span
                     title="Due date has passed (last 14 days)"
@@ -581,6 +586,8 @@ export default function Page() {
                     Overdue
                   </span>
                 )}
+
+                {/* RULE BADGE: if server includes short summary, show it; else fallback */}
                 {t.hasRule && (
                   <span
                     title="This task is controlled by a recurrence rule"
@@ -591,7 +598,7 @@ export default function Page() {
                       background: "#eefbea",
                     }}
                   >
-                    Has rule
+                    {t.ruleSummary ? t.ruleSummary : "Has rule"}
                   </span>
                 )}
               </li>

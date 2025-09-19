@@ -5,7 +5,7 @@ export const fetchCache = "force-no-store";
 
 import { NextResponse } from "next/server";
 import { cookies as getCookies } from "next/headers";
-import { noStoreJson } from "../_http";
+import { noStoreJson } from "../../_http";
 import { exchangeCodeForToken, redisSet } from "../../_utils";
 
 export async function GET(req: Request) {

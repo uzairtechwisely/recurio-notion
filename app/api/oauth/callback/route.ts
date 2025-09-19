@@ -6,8 +6,7 @@ export const fetchCache = "force-no-store";
 import { NextResponse } from "next/server";
 import { cookies as getCookies } from "next/headers";
 import { noStoreJson } from "../../_http";
-import { notionClient, exchangeCodeForToken } from "../../_utils";
-import { adoptTokenForThisSession } from "../../_session";
+import { notionClient, exchangeCodeForToken, redisSet } from "../../_utils";
 
 export async function GET(req: Request) {
   const u = new URL(req.url);
@@ -24,15 +23,19 @@ export async function GET(req: Request) {
   }
 
   try {
-    // 1) exchange code → token
+    // 1) Exchange code → token
     const tok = await exchangeCodeForToken(code, `${origin}/api/oauth/callback`);
-    await adoptTokenForThisSession(tok); // sets cookies + any server state you maintain
 
-    // (optional) sanity probe
+    // 2) Persist token for this session + a “latest” fallback (for iframe/popups)
+    //    If your redisSet accepts a TTL, you can add it as the 3rd arg (e.g., 2592000 for 30 days)
+    await redisSet(`tok:${sid}`, tok);
+    await redisSet(`tok:latest`, tok);
+
+    // 3) (optional) sanity probe to confirm token works
     const notion = notionClient(tok.access_token);
     await notion.users.me();
 
-    // 2) redirect to the broadcaster page (signals the opener/iframe and closes)
+    // 4) Redirect to a page that postMessage()'s success and closes (popup/iframe safe)
     return NextResponse.redirect(`${origin}/oauth/done`, { headers: { "Cache-Control": "no-store" } });
   } catch (e: any) {
     return noStoreJson({ ok: false, error: "oauth_callback_failed", detail: e?.message || String(e) }, 500);

@@ -1,25 +1,28 @@
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+export const runtime = "edge";
 export const fetchCache = "force-no-store";
 
-import { noStoreJson } from "../_http";
+import { noStoreJson, badRequest } from "../_http";
 import { getSidFromRequest } from "../_session";
 import { redisSet } from "../_utils";
 
+function isEmail(v: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+}
+
 export async function POST(req: Request) {
+  const body = await req.json().catch(() => ({} as any));
+  const email = (body?.email ?? "").toString().trim().toLowerCase();
+  if (!email || !isEmail(email)) return badRequest("invalid_email");
+
   const sid = await getSidFromRequest();
-  if (!sid) return noStoreJson({ ok: false, error: "no_sid" }, 400);
+  if (!sid) return badRequest("missing_sid_call_/api/session/new_first");
 
-  let email = "";
-  try { const b = await req.json(); email = String(b?.email || "").trim().toLowerCase(); } catch {}
-  if (!email || !email.includes("@")) return noStoreJson({ ok: false, error: "bad_email" }, 400);
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  await redisSet(`otp:${sid}`, { email, code, createdAt: Date.now() });
+  // store pending email + otp
+  await redisSet(`auth:email:${sid}`, email, 60 * 15);
+  await redisSet(`auth:otp:${sid}`, otp, 60 * 10);
 
-  // TODO: send code via your email provider; for now, only expose in dev
-  const body: any = { ok: true, sid };
-  if (process.env.NODE_ENV !== "production") body.devCode = code;
-
-  return noStoreJson(body);
+  const showOtp = process.env.SHOW_OTP_IN_RESPONSE === "1";
+  return noStoreJson({ ok: true, sid, email, ...(showOtp && { otp }) });
 }

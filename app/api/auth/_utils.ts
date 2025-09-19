@@ -1,16 +1,23 @@
-type KV = Map<string, string>;
-const g = globalThis as any;
-if (!g.__RECURIO_MEMO__) g.__RECURIO_MEMO__ = new Map<string, string>();
-const store: KV = g.__RECURIO_MEMO__;
+import { Redis } from "@upstash/redis";
 
-export async function redisSet(key: string, value: any) {
-  store.set(key, JSON.stringify(value));
+const redis = Redis.fromEnv();
+
+// tiny wrappers so our callsites stay clean
+export async function redisSet<T>(
+  key: string,
+  value: T,
+  ttlSeconds?: number
+) {
+  return ttlSeconds
+    ? redis.set(key, value as any, { ex: ttlSeconds })
+    : redis.set(key, value as any);
 }
-export async function redisGet<T = any>(key: string): Promise<T | null> {
-  const raw = store.get(key);
-  if (!raw) return null;
-  try { return JSON.parse(raw) as T; } catch { return null; }
+
+export async function redisGet<T = unknown>(key: string) {
+  return (await redis.get<T>(key)) ?? null;
 }
-export async function redisDel(key: string) {
-  store.delete(key);
+
+export async function redisDel(key: string | string[]) {
+  if (Array.isArray(key)) return redis.del(...key);
+  return redis.del(key);
 }

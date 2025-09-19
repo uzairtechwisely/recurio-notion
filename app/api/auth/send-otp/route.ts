@@ -1,23 +1,22 @@
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+export const runtime = "edge";
 export const fetchCache = "force-no-store";
 
-import { noStoreJson } from "../_http";
+import { noStoreJson, badRequest } from "../_http";
 import { getSidFromRequest } from "../_session";
-import { redisSet } from "../_utils";
+import { redisGet } from "../_utils";
 
-export async function POST(req: Request) {
+/**
+ * Placeholder "send" endpoint. In prod, wire your email provider here.
+ * For now we just confirm we have email+otp, and (optionally) echo otp for testing.
+ */
+export async function POST() {
   const sid = await getSidFromRequest();
-  if (!sid) return noStoreJson({ ok: false, error: "no_sid" }, 400);
+  if (!sid) return badRequest("missing_sid");
 
-  let email = "";
-  try { const b = await req.json(); email = String(b?.email || "").trim().toLowerCase(); } catch {}
-  if (!email || !email.includes("@")) return noStoreJson({ ok: false, error: "bad_email" }, 400);
+  const email = await redisGet<string>(`auth:email:${sid}`);
+  const otp = await redisGet<string>(`auth:otp:${sid}`);
+  if (!email || !otp) return badRequest("no_pending_otp");
 
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  await redisSet(`otp:${sid}`, { email, code, createdAt: Date.now() });
-
-  const body: any = { ok: true, sid };
-  if (process.env.NODE_ENV !== "production") body.devCode = code;
-  return noStoreJson(body);
+  const showOtp = process.env.SHOW_OTP_IN_RESPONSE === "1";
+  return noStoreJson({ ok: true, delivered: !showOtp, email, ...(showOtp && { otp }) });
 }

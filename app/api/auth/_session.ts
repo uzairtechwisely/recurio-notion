@@ -1,9 +1,12 @@
-import { cookies, headers } from "next/headers";
+import { headers, cookies } from "next/headers";
 
+/**
+ * Looks for SID in header `x-recurio-sid` first, then cookie `recurio_sid`.
+ * Using `await` works whether these helpers are sync or async in your runtime.
+ */
 export async function getSidFromRequest(): Promise<string | null> {
   const h = await headers();
-  const c = await cookies();
   const sidFromHeader = h.get("x-recurio-sid");
-  const sidFromCookie = c.get("recurio_sid")?.value;
-  return sidFromHeader || sidFromCookie || null;
+  const sidFromCookie = (await cookies()).get("recurio_sid")?.value;
+  return sidFromHeader ?? sidFromCookie ?? null;
 }

@@ -1,40 +1,44 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-/* ---------------- UI helpers ---------------- */
+/* ---------- tiny UI bits ---------- */
 
-function Btn({
-  children,
-  onClick,
-  title,
-  style,
-  type = "button",
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  title?: string;
-  style?: React.CSSProperties;
-  type?: "button" | "submit";
-}) {
-  const [pressed, setPressed] = useState(false);
+function Banner({ msg }: { msg: string | null }) {
+  if (!msg) return null;
+  return (
+    <div style={{ margin: "12px 0", padding: "10px 12px", border: "1px solid #ccc", background: "#fffceb", fontSize: 14, lineHeight: 1.45, whiteSpace: "pre-wrap" }}>
+      {msg}
+    </div>
+  );
+}
+
+function Help({ title }: { title: string }) {
+  return (
+    <span title={title} style={{ display: "inline-block", width: 18, height: 18, lineHeight: "18px", textAlign: "center", border: "1px solid #111", borderRadius: 9, fontSize: 12, marginLeft: 6, cursor: "help" }}>?</span>
+  );
+}
+
+const btnBase: React.CSSProperties = {
+  border: "1px solid #111",
+  padding: "8px 12px",
+  background: "#fff",
+  cursor: "pointer",
+  fontSize: 14,
+  lineHeight: "18px",
+  borderRadius: 4,
+  userSelect: "none",
+};
+
+function Btn(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { pressed?: boolean }) {
+  const { pressed, style, children, ...rest } = props;
   return (
     <button
-      type={type}
-      title={title}
-      onMouseDown={() => setPressed(true)}
-      onMouseUp={() => setPressed(false)}
-      onMouseLeave={() => setPressed(false)}
-      onClick={onClick}
+      {...rest}
       style={{
-        border: "1px solid #111",
-        background: pressed ? "#f0f0f0" : "#fff",
-        padding: "6px 10px",
-        cursor: "pointer",
-        boxShadow: pressed ? "inset 0 1px 2px rgba(0,0,0,0.25)" : "none",
-        transition: "background 0.12s ease",
-        borderRadius: 6,
-        ...style,
+        ...btnBase,
+        ...(pressed ? { background: "#f3f3f3", boxShadow: "inset 0 0 0 9999px rgba(0,0,0,0.04)" } : {}),
+        ...(style || {}),
       }}
     >
       {children}
@@ -42,85 +46,29 @@ function Btn({
   );
 }
 
-function Badge({
-  children,
-  title,
-  bg,
-}: {
-  children: React.ReactNode;
-  title: string;
-  bg: string;
-}) {
-  return (
-    <span
-      title={title}
-      style={{
-        fontSize: 12,
-        border: "1px solid #111",
-        padding: "2px 6px",
-        background: bg,
-        borderRadius: 4,
-      }}
-    >
-      {children}
-    </span>
-  );
+/* ---------- API helper ---------- */
+
+async function callApi<T = any>(url: string, init?: RequestInit) {
+  const res = await fetch(url, {
+    credentials: "include",
+    cache: "no-store",
+    ...init,
+    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+  });
+  let body: any = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  const bad = !res.ok || (body && body.ok === false);
+  const code = body?.error || res.statusText || `HTTP ${res.status}`;
+  const detail = body?.detail || body?.status || "";
+  const message = bad ? (detail ? `${code} — ${detail}` : code) : "";
+  return { ok: !bad, res, body: body as T, message };
 }
 
-function Help({ tip, wide }: { tip: React.ReactNode; wide?: boolean }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <span style={{ position: "relative", display: "inline-block", marginLeft: 6 }}>
-      <span
-        role="button"
-        onClick={() => setOpen((v) => !v)}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 18,
-          height: 18,
-          border: "1px solid #111",
-          borderRadius: "50%",
-          fontSize: 12,
-          fontWeight: 600,
-          cursor: "pointer",
-          background: "#fff",
-          userSelect: "none",
-        }}
-      >
-        ?
-      </span>
-      {open && (
-        <div
-          style={{
-            position: "absolute",
-            zIndex: 5,
-            top: 22,
-            right: 0,
-            maxWidth: wide ? 380 : 260,
-            background: "#fff",
-            border: "1px solid #111",
-            padding: 10,
-            borderRadius: 6,
-            boxShadow: "2px 2px 0 #111",
-            fontSize: 12,
-            lineHeight: 1.35,
-          }}
-        >
-          {tip}
-        </div>
-      )}
-    </span>
-  );
-}
-
-function fmtDue(d?: string | null) {
-  if (!d) return "-";
-  return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : new Date(d).toLocaleString();
-}
-
-/* ---------------- Types ---------------- */
+/* ---------- Types from your APIs ---------- */
 
 type Db = { id: string; title: string };
 type Task = {
@@ -133,566 +81,319 @@ type Task = {
   overdue?: boolean;
 };
 
-/* ---------------- Page ---------------- */
+/* ---------- Page ---------- */
 
-export default function Home() {
+export default function RecurioDashboard() {
+  const [status, setStatus] = useState<string | null>(null);
+
   const [connected, setConnected] = useState(false);
-  const [source, setSource] = useState<"sid" | "latest" | "adopted-latest" | "none" | string>("none");
-  const [checking, setChecking] = useState(true);
+  const [via, setVia] = useState<string | null>(null);
 
   const [dbs, setDbs] = useState<Db[]>([]);
-  const [dbId, setDbId] = useState("");
+  const [dbId, setDbId] = useState<string | null>(null);
+
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [taskId, setTaskId] = useState("");
+  const [taskId, setTaskId] = useState<string | null>(null);
 
-  const [notice, setNotice] = useState<string | null>(null);
-  const [saveErr, setSaveErr] = useState<string | null>(null);
-  const [syncErr, setSyncErr] = useState<string | null>(null);
-  const [connectErr, setConnectErr] = useState<string | null>(null);
+  // recurrence form
+  const [rule, setRule] = useState<"Daily" | "Weekly" | "Monthly" | "Yearly" | "Custom">("Weekly");
+  const [byday, setByday] = useState<string>("MO"); // comma list e.g. "MO,WE,FR"
+  const [interval, setInterval] = useState<number>(1);
+  const [time, setTime] = useState<string>("09:00");
+  const [tz, setTz] = useState<string>("Europe/London");
+  const [custom, setCustom] = useState<string>("");
 
-  const [saving, setSaving] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState<null | {
-    processed: number;
-    created: number;
-    details?: any[];
-  }>(null);
+  const selectedTask = useMemo(() => tasks.find(t => t.id === taskId) || null, [tasks, taskId]);
 
-  /* ----- lifecycle ----- */
-  async function checkStatus() {
-    setChecking(true);
-    setConnectErr(null);
-    setNotice(null);
-    try {
-      const d = await (await fetch("/api/me", { cache: "no-store" })).json();
-      setConnected(!!d.connected);
-      if (d?.source) setSource(d.source);
-      if (d.connected) await loadDbs();
-    } catch {
-      setConnectErr("Could not check status. Try reloading.");
-    } finally {
-      setChecking(false);
-    }
-  }
+  /* ----- bootstrap: ensure session + connection check ----- */
   useEffect(() => {
-    checkStatus();
+    // Make sure this tab has a sid cookie (works in top-level and in Notion embed)
+    fetch("/api/session/init", { credentials: "include" }).catch(() => {});
+    refreshConnection();
   }, []);
 
-  function connect() {
-  setConnectErr(null);
-  setNotice(null);
-
-  const w = window.open("/api/oauth/start", "notionAuth", "width=480,height=720");
-
-  // Listen for the callback's message and close the popup
-  const onMsg = async (ev: MessageEvent) => {
-    if (!ev || !ev.data || ev.data.type !== "recurio:oauth-complete") return;
-    window.removeEventListener("message", onMsg);
-    try { if (w && !w.closed) w.close(); } catch {}
-    // adopt token & load DBs
-    const d = await (await fetch("/api/me", { cache: "no-store" })).json();
-    setConnected(!!d.connected);
-    if (d?.source) setSource(d.source);
-    if (d.connected) await loadDbs();
-  };
-  window.addEventListener("message", onMsg);
-
-  // Fallback polling in case postMessage is blocked
-  const t = setInterval(async () => {
-    try {
-      const d = await (await fetch("/api/me", { cache: "no-store" })).json();
-      if (d.connected) {
-        clearInterval(t);
-        window.removeEventListener("message", onMsg);
-        try { if (w && !w.closed) w.close(); } catch {}
-        setConnected(true);
-        if (d?.source) setSource(d.source);
-        await loadDbs();
+  useEffect(() => {
+    function onMsg(e: MessageEvent) {
+      if (e?.data?.type === "recurio:oauth-complete") {
+        setStatus("Connected. Loading…");
+        refreshConnection().then(() => refreshDatabases());
       }
-    } catch {}
-  }, 1500);
-
-  // Safety cleanup after 3 minutes
-  setTimeout(() => {
-    clearInterval(t);
-    window.removeEventListener("message", onMsg);
-  }, 3 * 60 * 1000);
-}
-
-  async function disconnect() {
-    setConnectErr(null);
-    const r = await fetch("/api/admin/disconnect", { method: "POST" });
-    if (r.ok) {
-      setConnected(false);
-      setSource("none");
-      setDbs([]);
-      setDbId("");
-      setTasks([]);
-      setTaskId("");
-      setNotice("Disconnected. Click ‘Connect Notion’ to link a workspace.");
-    } else {
-      setConnectErr("Failed to disconnect. Try again.");
     }
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+
+  /* ---------- actions ---------- */
+
+  async function refreshConnection() {
+    const { ok, body } = await callApi<{ connected: boolean; source?: string }>("/api/me");
+    setConnected(!!body?.connected && ok);
+    setVia(body?.source || null);
+    return ok && body?.connected;
   }
 
-  async function clearRules() {
-    setNotice(null);
-    const ok = confirm("Archive all rule rows in the managed Rules DB? (Reversible)");
-    if (!ok) return;
-    const r = await fetch("/api/admin/reset-managed", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "archive" }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (r.ok && j.ok) setNotice(`Archived ${j.archived} rule row(s).`);
-    else setNotice(j.error || "Failed to archive rules.");
+  function onConnect() {
+    setStatus("Opening Notion…");
+    const popup = window.open("/api/oauth/start", "recurio_oauth", "width=420,height=640");
+    // Fallback poll in case postMessage is blocked
+    let tries = 0;
+    const iv = setInterval(async () => {
+      tries++;
+      const ok = await refreshConnection();
+      if (ok || tries > 20) {
+        clearInterval(iv);
+        if (ok) {
+          setStatus("Connected ✅");
+          refreshDatabases();
+          try { popup?.close(); } catch {}
+        } else {
+          setStatus("Connection didn’t complete. Try again.");
+        }
+      }
+    }, 800);
   }
 
-  async function resetManaged() {
-    setNotice(null);
-    const ok = confirm(
-      "Create a brand-new managed page & Rules DB (old DB will be renamed and kept)?"
-    );
-    if (!ok) return;
-    const r = await fetch("/api/admin/reset-managed", { method: "POST" });
-    const j = await r.json().catch(() => ({}));
-    if (r.ok && j.ok) setNotice("Fresh managed assets created.");
-    else setNotice(j.error || "Failed to recreate managed assets.");
+  async function onDisconnect() {
+    setStatus("Disconnecting…");
+    const { ok, message } = await callApi("/api/admin/disconnect", { method: "POST" });
+    setConnected(false);
+    setVia(null);
+    setDbId(null);
+    setTasks([]);
+    setTaskId(null);
+    setStatus(ok ? "Disconnected ✅" : `Disconnect failed: ${message}`);
   }
 
-  async function loadDbs() {
-    setNotice(null);
-    try {
-      const r = await fetch("/api/databases", { cache: "no-store" });
-      const d = await r.json();
-      setDbs(d.databases || []);
-    } catch {
-      setNotice("Could not load databases. Ensure the integration is added to your DB.");
+  async function refreshDatabases() {
+    setStatus("Loading databases…");
+    const { ok, body, message } = await callApi<{ databases: Db[] }>("/api/databases");
+    if (!ok) {
+      setStatus(`Load DBs failed: ${message}`);
+      return;
     }
+    setDbs(body?.databases || []);
+    setStatus(`Loaded ${body?.databases?.length ?? 0} databases ✅`);
   }
 
   async function openDb(id: string) {
     setDbId(id);
-    setNotice(null);
-    setTaskId("");
-    try {
-      const r = await fetch(`/api/tasks?db=${encodeURIComponent(id)}`, {
-        cache: "no-store",
-      });
-      const d = await r.json();
-      setTasks(d.tasks || []);
-    } catch {
-      setNotice("Could not load tasks for that database.");
+    setTaskId(null);
+    setStatus("Loading tasks…");
+    const { ok, body, message } = await callApi<{ tasks: Task[]; error?: string }>(`/api/tasks?db=${encodeURIComponent(id)}`);
+    if (!ok) {
+      setTasks([]);
+      setStatus(`Could not load tasks: ${message}`);
+      return;
     }
+    setTasks(body?.tasks || []);
+    setStatus(`Loaded ${body?.tasks?.length ?? 0} tasks ✅`);
   }
 
-  /* ----- actions ----- */
-
-  async function saveRule(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setSaveErr(null);
-    setNotice(null);
-    setSyncResult(null);
-
-    if (!connected) {
-      setSaveErr("Connect Notion first.");
-      return;
-    }
-    if (!dbId) {
-      setSaveErr("Open a database first.");
-      return;
-    }
+  async function onMakeRecurring() {
     if (!taskId) {
-      setSaveErr("Select a task first.");
+      setStatus("Select a task first (radio) before clicking Make recurring.");
       return;
     }
-
-    setSaving(true);
-    try {
-      const fd = new FormData(e.currentTarget);
-      const body = Object.fromEntries(fd.entries());
-      const res = await fetch("/api/rules", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const text = await res.text();
-      let j: any = {};
-      try {
-        j = JSON.parse(text);
-      } catch {}
-      if (!res.ok || j.ok === false) {
-        setSaveErr(j.error || text || "Failed to save rule.");
-      } else {
-        setNotice(
-          "✅ Rule saved to ‘Recurrence Rules (Managed)’. Mark the task Done in Notion, then click Sync now."
-        );
-        // refresh task list to reflect "Has rule" badge immediately
-        if (dbId) openDb(dbId);
-      }
-    } catch (err: any) {
-      setSaveErr(err?.message || "Network error while saving rule.");
-    } finally {
-      setSaving(false);
-    }
+    const payload: any = {
+      taskPageId: taskId,
+      rule,
+      byday,
+      interval,
+      time,
+      tz,
+      custom: rule === "Custom" ? custom : "",
+    };
+    setStatus("Saving rule…");
+    const { ok, message } = await callApi("/api/rules", { method: "POST", body: JSON.stringify(payload) });
+    setStatus(ok ? "Rule saved ✅" : `Save failed: ${message}`);
   }
 
-  async function runNow() {
-    setSyncErr(null);
-    setNotice(null);
-    setSyncResult(null);
-
-    if (!connected) {
-      setSyncErr("Connect Notion first.");
+  async function onSyncNow() {
+    setStatus("Syncing…");
+    const { ok, body, message } = await callApi<{ processed: number; created: number }>("/api/worker", {
+      method: "POST",
+      body: JSON.stringify({ dbId }),
+    });
+    if (!ok) {
+      setStatus(`Sync failed: ${message}`);
       return;
     }
-
-    setSyncing(true);
-    try {
-      const res = await fetch("/api/worker", { cache: "no-store" });
-      const text = await res.text();
-      let j: any = {};
-      try {
-        j = JSON.parse(text);
-      } catch {}
-      if (!res.ok) {
-        setSyncErr(j?.error || text || "Sync failed.");
-      } else {
-        setSyncResult(j);
-        if (j?.created > 0) {
-          setNotice(
-            `✅ Synced. Created ${j.created} next task(s). The rule now points to the new task.`
-          );
-          if (dbId) openDb(dbId);
-        } else {
-          setNotice(
-            "Synced. Nothing to create (is a task marked Done and has a Due date?)."
-          );
-        }
-      }
-    } catch (err: any) {
-      setSyncErr(err?.message || "Network error while syncing.");
-    } finally {
-      setSyncing(false);
-    }
+    setStatus(`Sync done ✅  processed: ${body?.processed ?? 0}; created: ${body?.created ?? 0}`);
+    // refresh tasks list after sync
+    if (dbId) openDb(dbId);
   }
 
-  /* ----- render ----- */
+  async function onResetManaged(mode?: "archive") {
+    setStatus(mode === "archive" ? "Archiving rules…" : "Repairing managed assets…");
+    const { ok, body, message } = await callApi<{ ok: boolean; pageId?: string; dbId?: string; archived?: number }>("/api/admin/reset-managed", {
+      method: "POST",
+      body: JSON.stringify({ mode }),
+    });
+    if (!ok || !body?.ok) {
+      setStatus(`Reset failed: ${message}`);
+      return;
+    }
+    const info =
+      body?.archived != null
+        ? `Archived ${body.archived} rule(s)`
+        : `Ready (Page ${body.pageId?.slice(0, 6)}…, DB ${body.dbId?.slice(0, 6)}…)`;
+    setStatus(`Managed assets OK ✅  ${info}`);
+  }
+
+  /* ---------- UI ---------- */
 
   return (
-    <main
-      style={{
-        maxWidth: 880,
-        margin: "32px auto",
-        padding: "0 16px",
-        fontFamily: "system-ui, Arial, sans-serif",
-      }}
-    >
-      <h1>Recurio — barebones</h1>
+    <main style={{ maxWidth: 980, margin: "32px auto", padding: "0 16px", fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial" }}>
+      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <h1 style={{ margin: 0 }}>Recurio Dashboard</h1>
+        <div style={{ fontSize: 13, color: connected ? "#0a0" : "#900" }}>
+          {connected ? <>Connected <span title={`via: ${via || "-"}`}>✓</span></> : "Not connected"}
+        </div>
+      </header>
 
-      {/* Connect row */}
-      <div
-        style={{
-          border: "1px solid #111",
-          padding: 12,
-          margin: "12px 0",
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          flexWrap: "wrap",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <Btn onClick={connect} title="Start the Notion OAuth flow in a popup.">
-            Connect Notion
-          </Btn>
-          <Help tip="Opens Notion’s consent window. After approving, come back here—status turns green and databases load." />
+      <Banner msg={status} />
+
+      <section style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <div>
+          <Btn onClick={onConnect}>Connect Notion</Btn>
+          <Help title="Opens Notion OAuth in a popup. Approve access, then this page refreshes." />
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <Btn onClick={onDisconnect}>Disconnect</Btn>
+          <Help title="Clears this tab's session only. Use this to switch Notion accounts." />
         </div>
 
-        <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "4px 8px",
-            border: "1px solid #111",
-            background: connected ? "#eaffea" : "#fff3f3",
-            borderRadius: 6,
-          }}
-        >
-          <span
-            style={{
-              width: 10,
-              height: 10,
-              borderRadius: "50%",
-              background: connected ? "#2ecc71" : "#e74c3c",
-              display: "inline-block",
-            }}
-          />
-          {checking ? "Checking..." : connected ? "Connected" : "Not connected"}
-          {!checking && (
-            <small style={{ marginLeft: 8, opacity: 0.7 }}>
-              via: <code>{source || "?"}</code>
-            </small>
-          )}
-        </span>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <Btn onClick={checkStatus} title="Re-check connection & refresh DBs.">
-            Check status
-          </Btn>
-          <Help tip="If you connected in another tab or popup, use this to refresh and adopt the token in this session." />
+        <div>
+          <Btn onClick={() => onResetManaged()}>Reset managed</Btn>
+          <Help title={`Creates/repairs "Recurio (Managed)" page and "Recurrence Rules (Managed)" DB, unarchiving if needed.`} />
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <Btn onClick={() => onResetManaged("archive")}>Archive all rules</Btn>
+          <Help title="Archives all rule pages (soft off). You can make specific tasks recurring again later." />
         </div>
 
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <div style={{ display: "inline-flex", alignItems: "center" }}>
-            <Btn onClick={disconnect} title="Clear the current session token.">
-              Disconnect
-            </Btn>
-            <Help tip="Clears this session’s token and cookie. Useful if you linked the wrong workspace." />
+        <div>
+          <Btn onClick={refreshDatabases}>Refresh databases</Btn>
+          <Help title="Loads databases the Recurio integration can see. Make sure you've shared your Tasks DB with Recurio (Can edit)." />
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <Btn onClick={onSyncNow} disabled={!connected}>Sync now</Btn>
+          <Help title="Processes rules and creates the next task(s). Mark a task Done in Notion, then click Sync." />
+        </div>
+      </section>
+
+      <section style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 16 }}>
+        {/* DB list */}
+        <div style={{ border: "1px solid #111", padding: 12, borderRadius: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h3 style={{ margin: 0 }}>Databases</h3>
           </div>
-          <div style={{ display: "inline-flex", alignItems: "center" }}>
-            <Btn onClick={clearRules} title="Archive all rows in the managed Rules DB.">
-              Clear rules
-            </Btn>
-            <Help tip="Archives all rule rows (reversible in Notion). Use if you want to start fresh without touching your tasks." />
+          <ul style={{ listStyle: "none", margin: "8px 0 0", padding: 0 }}>
+            {dbs.map((d) => (
+              <li key={d.id} style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                <Btn pressed={dbId === d.id} onClick={() => openDb(d.id)} style={{ padding: "6px 10px" }}>
+                  Open
+                </Btn>
+                <span style={{ fontSize: 13, wordBreak: "break-word" }}>
+                  <b>{d.title || "Untitled"}</b>
+                  <br />
+                  <small style={{ color: "#555" }}>{d.id}</small>
+                </span>
+              </li>
+            ))}
+            {!dbs.length && <li style={{ color: "#666", fontSize: 13 }}>No databases yet. Share your Tasks DB with <b>Recurio</b> (Can edit), then “Refresh databases”.</li>}
+          </ul>
+        </div>
+
+        {/* Tasks + rule form */}
+        <div style={{ border: "1px solid #111", padding: 12, borderRadius: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h3 style={{ margin: 0 }}>Tasks</h3>
+            {dbId && <small style={{ color: "#555" }}>DB: {dbId}</small>}
           </div>
-          <div style={{ display: "inline-flex", alignItems: "center" }}>
-            <Btn onClick={resetManaged} title="Recreate the hidden page and Rules DB.">
-              Reset managed
-            </Btn>
-            <Help tip="Renames your current ‘Recurrence Rules (Managed)’ DB as OLD and creates a brand-new empty one." />
-          </div>
-        </div>
 
-        {connectErr && (
-          <div style={{ width: "100%", color: "#c0392b", marginTop: 6 }}>{connectErr}</div>
-        )}
-      </div>
+          <ul style={{ listStyle: "none", margin: "8px 0 16px", padding: 0, maxHeight: 320, overflow: "auto" }}>
+            {tasks.map((t) => (
+              <li key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px dashed #eee" }}>
+                <label style={{ flex: 1, cursor: "pointer" }}>
+                  <input type="radio" name="pick" checked={taskId === t.id} onChange={() => setTaskId(t.id)} />{" "}
+                  <b>{t.name}</b> &nbsp; <small>Due: {t.due || "-"}</small>
+                </label>
+                {t.overdue && (
+                  <span title="Due date has passed (last 14 days)" style={{ fontSize: 12, border: "1px solid #111", padding: "2px 6px", background: "#ffefef" }}>
+                    Overdue
+                  </span>
+                )}
+                {t.hasRule && (
+                  <span title="This task is controlled by a recurrence rule" style={{ fontSize: 12, border: "1px solid #111", padding: "2px 6px", background: "#eefbea" }}>
+                    Has rule
+                  </span>
+                )}
+              </li>
+            ))}
+            {!tasks.length && <li style={{ color: "#666", fontSize: 13 }}>No tasks to show. Pick a DB on the left.</li>}
+          </ul>
 
-      {/* Global notice */}
-      {notice && (
-        <div
-          style={{
-            border: "1px solid #111",
-            padding: 12,
-            margin: "12px 0",
-            background: "#f9f9f9",
-            borderRadius: 6,
-          }}
-        >
-          {notice}
-        </div>
-      )}
-
-      {/* Sync result details */}
-      {syncResult && (
-        <div style={{ border: "1px solid #111", padding: 12, margin: "12px 0", borderRadius: 6 }}>
-          <b>Sync result:</b> processed {syncResult.processed}, created {syncResult.created}
-          {Array.isArray(syncResult.details) && syncResult.details.length > 0 && (
-            <ul style={{ marginTop: 6 }}>
-              {syncResult.details.map((it, i) => (
-                <li key={i}>
-                  <small>
-                    Created next for <code>{it.title}</code> → due {fmtDue(it.next)}
-                  </small>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-
-      {/* DB browser */}
-      <div style={{ border: "1px solid #111", padding: 12, margin: "12px 0", borderRadius: 6 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <Btn onClick={loadDbs} title="Reload your accessible Notion databases.">
-            Refresh Databases
-          </Btn>
-          <Help tip="If you just shared a DB with the integration, click this to fetch it." />
-        </div>
-        <ul style={{ marginTop: 8 }}>
-          {dbs.map((db) => (
-            <li key={db.id} style={{ marginBottom: 8 }}>
-              <b>{db.title}</b>{" "}
-              <Btn onClick={() => openDb(db.id)} title="Open and show recent/upcoming tasks from this DB.">
-                Open
-              </Btn>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      {/* Tasks + rule form */}
-      {dbId && (
-        <div style={{ border: "1px solid #111", padding: 12, margin: "12px 0", borderRadius: 6 }}>
-          <h2>Tasks</h2>
-          <small>Showing upcoming, overdue (last 14 days, not done), and recently created tasks only.</small>
-
-          {tasks.length === 0 ? (
-            <p>
-              <small>No recent or upcoming tasks to show.</small>
-            </p>
-          ) : (
-            <ul style={{ listStyle: "none", padding: 0, margin: "8px 0" }}>
-              {tasks.map((t) => (
-                <li
-                  key={t.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    padding: "4px 8px",
-                    borderRadius: 6,
-                    background: t.id === taskId ? "#f7f7f7" : "transparent",
-                  }}
-                >
-                  <label style={{ flex: 1, cursor: "pointer" }}>
-                    <input type="radio" name="pick" onChange={() => setTaskId(t.id)} />{" "}
-                    <b>{t.name}</b> &nbsp; <small>Due: {fmtDue(t.due)}</small>
-                  </label>
-                  {t.overdue && (
-                    <Badge title="Due date has passed (last 14 days)" bg="#ffefef">
-                      Overdue
-                    </Badge>
-                  )}
-                  {t.hasRule && (
-                    <Badge title="This task is controlled by a recurrence rule" bg="#eefbea">
-                      Has rule
-                    </Badge>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <form onSubmit={saveRule} style={{ marginTop: 12 }}>
-            <input type="hidden" name="taskPageId" value={taskId} />
-            <input type="hidden" name="dbId" value={dbId} />
-
-            <div
-              style={{
-                display: "grid",
-                gap: 8,
-                gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))",
-              }}
-            >
-              <label>
-                Rule
-                <div style={{ display: "flex", alignItems: "center" }}>
-                  <select name="rule" defaultValue="Weekly" style={{ width: "100%" }}>
-                    <option>Daily</option>
-                    <option>Weekly</option>
-                    <option>Monthly</option>
-                    <option>Yearly</option>
-                    <option>Custom</option>
-                  </select>
-                  <Help tip="Pick how often the next task should be created. Weekly repeats on the same weekday/time as the current Due date (unless you specify By Day)." />
-                </div>
-              </label>
-
-              <label>
-                By Day (e.g., MO,WE,FR)
-                <div style={{ display: "flex", alignItems: "center" }}>
-                  <input name="byday" placeholder="optional" />
-                  <Help tip="Use 2-letter weekday codes: MO,TU,WE,TH,FR,SA,SU. For ‘weekdays except Wed’, use MO,TU,TH,FR." />
-                </div>
-              </label>
-
-              <label>
-                Interval
-                <div style={{ display: "flex", alignItems: "center" }}>
-                  <input type="number" name="interval" defaultValue="1" />
-                  <Help tip="Every how many units? (e.g., Weekly + Interval 2 = every 2 weeks)" />
-                </div>
-              </label>
-
-              <label>
-                Time (HH:mm)
-                <div style={{ display: "flex", alignItems: "center" }}>
-                  <input name="time" placeholder="17:00" />
-                  <Help tip="Optional. If your Due has a time, we carry it forward automatically. You can set a time here when saving the rule for Daily/Weekly patterns." />
-                </div>
-              </label>
-
-              <label>
-                Timezone
-                <div style={{ display: "flex", alignItems: "center" }}>
-                  <input name="tz" placeholder="Europe/London" />
-                  <Help tip="Optional. Informational for now; your Due’s stored format (date-only vs datetime) is preserved." />
-                </div>
-              </label>
-
-              <label style={{ gridColumn: "1 / -1" }}>
-                Custom RRULE
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <input
-                    name="custom"
-                    placeholder="e.g. FREQ=WEEKLY;BYDAY=MO,TU,TH,FR"
-                    style={{ flex: 1 }}
-                  />
-                  <Help
-                    wide
-                    tip={
-                      <>
-                        <b>When to use:</b> choose <i>Rule = Custom</i> then paste a full iCalendar RRULE.<br />
-                        <b>Examples:</b>
-                        <ul style={{ margin: "6px 0 0 16px" }}>
-                          <li>Weekdays (skip Wed): <code>FREQ=WEEKLY;BYDAY=MO,TU,TH,FR</code></li>
-                          <li>Every 3 days: <code>FREQ=DAILY;INTERVAL=3</code></li>
-                          <li>1st business day each month (approx): <code>FREQ=MONTHLY;BYSETPOS=1;BYDAY=MO,TU,WE,TH,FR</code></li>
-                        </ul>
-                      </>
-                    }
-                  />
-                </div>
-              </label>
-            </div>
-
-            <div style={{ marginTop: 10 }}>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <div style={{ display: "inline-flex", alignItems: "center" }}>
-                  <Btn
-                    type="submit"
-                    title="Save the recurrence rule for the selected task."
-                  >
-                    Make recurring
-                  </Btn>
-                  <Help tip="Saves/updates the rule. Pick a task first. Then mark it Done in Notion and press Sync now." />
-                </div>
-
-                <div style={{ display: "inline-flex", alignItems: "center" }}>
-                  <Btn type="button" onClick={runNow} title="Run the worker now to create next occurrences.">
-                    Sync now
-                  </Btn>
-                  <Help tip="Creates the next tasks for any rules whose current task is Done and has a Due date." />
-                </div>
+          {/* Rule form */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <label>
+              <div style={{ fontSize: 12, marginBottom: 4 }}>
+                Rule <Help title='Choose how often to repeat. "Custom" lets you enter a full RRULE string.' />
               </div>
+              <select value={rule} onChange={(e) => setRule(e.target.value as any)} style={{ width: "100%", padding: 8, border: "1px solid #111", borderRadius: 4 }}>
+                <option>Daily</option>
+                <option>Weekly</option>
+                <option>Monthly</option>
+                <option>Yearly</option>
+                <option>Custom</option>
+              </select>
+            </label>
 
-              {/* Inline errors under the action row */}
-              {(saving || saveErr) && (
-                <div style={{ marginTop: 6 }}>
-                  {saving ? (
-                    <span style={{ color: "#333" }}>Saving rule…</span>
-                  ) : (
-                    saveErr && <span style={{ color: "#c0392b" }}>{saveErr}</span>
-                  )}
-                </div>
-              )}
-              {(syncing || syncErr) && (
-                <div style={{ marginTop: 4 }}>
-                  {syncing ? (
-                    <span style={{ color: "#333" }}>Syncing…</span>
-                  ) : (
-                    syncErr && <span style={{ color: "#c0392b" }}>{syncErr}</span>
-                  )}
-                </div>
-              )}
-            </div>
-          </form>
+            <label>
+              <div style={{ fontSize: 12, marginBottom: 4 }}>
+                Interval <Help title="Repeat every N units (e.g., Weekly + Interval 2 = every 2 weeks)." />
+              </div>
+              <input type="number" min={1} value={interval} onChange={(e) => setInterval(Math.max(1, Number(e.target.value || 1)))} style={{ width: "100%", padding: 8, border: "1px solid #111", borderRadius: 4 }} />
+            </label>
+
+            <label>
+              <div style={{ fontSize: 12, marginBottom: 4 }}>
+                By day <Help title='Days of week for Weekly rules, comma-separated: MO,TU,WE,TH,FR,SA,SU. Tip: to skip weekends on a Daily rule, use Custom RRULE like: FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR' />
+              </div>
+              <input type="text" value={byday} onChange={(e) => setByday(e.target.value)} placeholder="MO,TU,WE…" style={{ width: "100%", padding: 8, border: "1px solid #111", borderRadius: 4 }} />
+            </label>
+
+            <label>
+              <div style={{ fontSize: 12, marginBottom: 4 }}>
+                Time <Help title='Optional time of day (24h). Example: 09:00' />
+              </div>
+              <input type="time" value={time} onChange={(e) => setTime(e.target.value)} style={{ width: "100%", padding: 8, border: "1px solid #111", borderRadius: 4 }} />
+            </label>
+
+            <label>
+              <div style={{ fontSize: 12, marginBottom: 4 }}>
+                Timezone <Help title='IANA timezone (e.g., Europe/London, America/New_York).' />
+              </div>
+              <input type="text" value={tz} onChange={(e) => setTz(e.target.value)} placeholder="Europe/London" style={{ width: "100%", padding: 8, border: "1px solid #111", borderRadius: 4 }} />
+            </label>
+
+            <label style={{ gridColumn: "1 / span 2" }}>
+              <div style={{ fontSize: 12, marginBottom: 4 }}>
+                Custom RRULE <Help title='Optional full RRULE (overrides Rule/By day/Interval). Example: FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE,FR' />
+              </div>
+              <input type="text" value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="FREQ=WEEKLY;INTERVAL=1;BYDAY=MO" style={{ width: "100%", padding: 8, border: "1px solid #111", borderRadius: 4 }} />
+            </label>
+          </div>
+
+          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+            <Btn onClick={onMakeRecurring}>Make recurring</Btn>
+            <Help title="Saves/updates the rule for the selected task. Then mark the task Done in Notion and click Sync now." />
+            <Btn onClick={() => dbId && openDb(dbId)} style={{ marginLeft: "auto" }}>
+              Reload tasks
+            </Btn>
+          </div>
         </div>
-      )}
+      </section>
     </main>
   );
 }

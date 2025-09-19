@@ -14,6 +14,52 @@ async function r(cmd: string) {
   return j?.result ?? null;
 }
 
+export async function exchangeCodeForToken(code: string, redirectUri: string) {
+  const cid = process.env.NOTION_CLIENT_ID;
+  const secret = process.env.NOTION_CLIENT_SECRET;
+  if (!cid || !secret) {
+    throw new Error("Missing NOTION_CLIENT_ID / NOTION_CLIENT_SECRET");
+  }
+
+  // Build Basic auth safely in Node or Edge
+  let basicCreds = "";
+  try {
+    // Node.js
+    // @ts-ignore
+    basicCreds = Buffer.from(`${cid}:${secret}`).toString("base64");
+  } catch {
+    // Edge/browser fallback
+    // @ts-ignore
+    basicCreds = (globalThis as any).btoa?.(`${cid}:${secret}`) || "";
+  }
+  const authHeader = `Basic ${basicCreds}`;
+
+  const res = await fetch("https://api.notion.com/v1/oauth/token", {
+    method: "POST",
+    headers: {
+      Authorization: authHeader,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      // Notion-Version not required for OAuth, but harmless if you keep a default fetch wrapper
+    },
+    body: JSON.stringify({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri,
+    }),
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`token_exchange_failed ${res.status}: ${text}`);
+  }
+
+  // Shape: { access_token, workspace_id, bot_id, owner, duplicated_template_id?, ... }
+  const token = await res.json();
+  return token;
+}
+
 export async function redisGet<T = any>(key: string): Promise<T | null> {
   const res = await r(`get/${encodeURIComponent(key)}`);
   if (res == null) return null;

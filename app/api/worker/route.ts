@@ -232,12 +232,23 @@ export async function POST(req: Request) {
       const dbMeta: any = await notion.databases.retrieve({ database_id: parentDbId }).catch(() => null);
       if (!dbMeta) { details.push({ from: taskPageId, note:"db_meta_failed" }); continue; }
       const dbProps = dbMeta.properties || {};
-      // title prop id
-      const titlePropId = Object.entries(dbProps).find(([, v]: any) => (v as any)?.type === "title")?.[1]?.id || "title";
-      // date prop id
-      const dueKeyId = preferDateKey(tProps).id ||
-                       (Object.entries(dbProps).find(([, v]: any) => (v as any)?.type === "date")?.[1] as any)?.id;
+     // title prop id (use explicit tuple typing so TS knows .id exists)
+const titlePropId: string = (() => {
+  const entry = Object.entries(dbProps).find(
+    ([, v]: [string, any]) => (v as any)?.type === "title"
+  );
+  return entry ? ((entry[1] as any).id ?? "title") : "title";
+})();
 
+// date prop id: prefer the task’s actual date prop id, else first date prop in DB
+const dueKeyId: string | undefined = (() => {
+  const fromTask = preferDateKey(tProps).id;
+  if (fromTask) return fromTask;
+  const entry = Object.entries(dbProps).find(
+    ([, v]: [string, any]) => (v as any)?.type === "date"
+  );
+  return entry ? ((entry[1] as any).id as string) : undefined;
+})();
       // Build new page properties
       const propsNew: any = {
         [titlePropId]: { title: [{ text: { content: title } }] }

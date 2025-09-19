@@ -132,26 +132,26 @@ export default function RecurioDashboard() {
     return ok && body?.connected;
   }
 
-  function onConnect() {
-    setStatus("Opening Notion…");
-    const popup = window.open("/api/oauth/start", "recurio_oauth", "width=420,height=640");
-    // Fallback poll in case postMessage is blocked
-    let tries = 0;
-    const iv = setInterval(async () => {
-      tries++;
-      const ok = await refreshConnection();
-      if (ok || tries > 20) {
-        clearInterval(iv);
-        if (ok) {
-          setStatus("Connected ✅");
-          refreshDatabases();
-          try { popup?.close(); } catch {}
-        } else {
-          setStatus("Connection didn’t complete. Try again.");
-        }
+ function onConnect() {
+  setStatus("Opening Notion…");
+  const popup = window.open("/api/oauth/start", "recurio_oauth", "width=420,height=640");
+
+  let tries = 0;
+  let handle: number = window.setInterval(async () => {
+    tries++;
+    const ok = await refreshConnection();
+    if (ok || tries > 20) {
+      window.clearInterval(handle);
+      if (ok) {
+        setStatus("Connected ✅");
+        refreshDatabases();
+        try { popup?.close(); } catch {}
+      } else {
+        setStatus("Connection didn’t complete. Try again.");
       }
-    }, 800);
-  }
+    }
+  }, 800);
+}
 
   async function onDisconnect() {
     setStatus("Disconnecting…");

@@ -3,32 +3,37 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
-import { cookies as getCookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { nanoid } from "nanoid";
+import { cookies as getCookies } from "next/headers";
+
+function makeState(len = 24) {
+  const src = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let s = "";
+  for (let i = 0; i < len; i++) s += src[Math.floor(Math.random() * src.length)];
+  return s;
+}
 
 export async function GET(req: Request) {
-  const base = process.env.APP_URL || new URL(req.url).origin;
+  const u = new URL(req.url);
+  const base = process.env.APP_URL || u.origin;
   const redirectUri = `${base}/api/oauth/callback`;
-
   const clientId = process.env.NOTION_CLIENT_ID!;
-  const state = nanoid();
+  if (!clientId) {
+    return new NextResponse(JSON.stringify({ ok: false, error: "missing_client_id" }), {
+      status: 500, headers: { "content-type": "application/json", "cache-control": "no-store" }
+    });
+  }
 
   const jar = await getCookies();
-  const sid = jar.get("sid")?.value || nanoid();
+  const sid = jar.get("sid")?.value || crypto.randomUUID();
+  const state = makeState();
 
-  const params = new URLSearchParams({
-    client_id: clientId,
-    response_type: "code",
-    owner: "user",
-    redirect_uri: redirectUri,
-    state,
-  });
+  const url = `https://api.notion.com/v1/oauth/authorize?owner=user&client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&state=${encodeURIComponent(state)}`;
+  const res = NextResponse.redirect(url);
 
-  const authUrl = `https://api.notion.com/v1/oauth/authorize?${params.toString()}`;
+  // Friendly to iframes (third-party contexts)
+  res.cookies.set("oauth_state", state, { httpOnly: true, sameSite: "none", secure: true, path: "/" });
+  res.cookies.set("sid", sid,         { httpOnly: true, sameSite: "none", secure: true, path: "/" });
 
-  const res = NextResponse.redirect(authUrl, { headers: { "Cache-Control": "no-store" } });
-  res.cookies.set({ name: "oauth_state", value: state, httpOnly: true, sameSite: "lax", path: "/" });
-  res.cookies.set({ name: "sid", value: sid,   httpOnly: true, sameSite: "lax", path: "/" });
   return res;
 }

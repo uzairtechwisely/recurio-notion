@@ -1,19 +1,23 @@
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
-export const fetchCache = "force-no-store";
-
+// app/api/session/new/route.ts
 import { NextResponse } from "next/server";
 
-// tiny id
-function nanoid(n = 18) {
-  const abc = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  let s = ""; for (let i = 0; i < n; i++) s += abc[Math.floor(Math.random()*abc.length)];
-  return s;
-}
+export const runtime = "edge";
+export const fetchCache = "force-no-store";
 
 export async function POST() {
-  const sid = nanoid(18);
-  const res = NextResponse.json({ ok: true, sid }, { headers: { "Cache-Control": "no-store" } });
-  try { res.cookies.set("sid", sid, { httpOnly: true, sameSite: "lax", path: "/" }); } catch {}
+  const sid = crypto.randomUUID();
+
+  const res = NextResponse.json({ ok: true, sid });
+  res.headers.set("Cache-Control", "no-store, must-revalidate");
+  res.cookies.set({
+    name: "recurio_sid",
+    value: sid,
+    httpOnly: true,
+    sameSite: "lax",
+    secure: true,
+    path: "/",
+    maxAge: 60 * 60 * 24 * 7, // 7 days
+  });
+
   return res;
 }

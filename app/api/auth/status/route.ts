@@ -1,5 +1,4 @@
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+export const runtime = "edge";
 export const fetchCache = "force-no-store";
 
 import { noStoreJson } from "../_http";
@@ -8,8 +7,14 @@ import { redisGet } from "../_utils";
 
 export async function GET() {
   const sid = await getSidFromRequest();
-  if (!sid) return noStoreJson({ ok: true, authed: false, sid: null, email: null });
 
-  const acct = await redisGet<{ email?: string }>(`acct:${sid}`);
-  return noStoreJson({ ok: true, authed: !!acct, sid, email: acct?.email || null });
+  if (!sid) return noStoreJson({ ok: true, status: "no-session" });
+
+  const user = await redisGet(`session:user:${sid}`);
+  if (user) return noStoreJson({ ok: true, status: "signed-in", user });
+
+  const email = await redisGet<string>(`auth:email:${sid}`);
+  if (email) return noStoreJson({ ok: true, status: "otp-pending", email });
+
+  return noStoreJson({ ok: true, status: "anonymous" });
 }

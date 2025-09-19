@@ -1,26 +1,26 @@
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+export const runtime = "edge";
 export const fetchCache = "force-no-store";
 
-import { noStoreJson } from "../_http";
+import { noStoreJson, badRequest, unauthorized } from "../_http";
 import { getSidFromRequest } from "../_session";
 import { redisGet, redisDel, redisSet } from "../_utils";
 
 export async function POST(req: Request) {
+  const body = await req.json().catch(() => ({} as any));
+  const code = (body?.code ?? "").toString().trim();
+
   const sid = await getSidFromRequest();
-  if (!sid) return noStoreJson({ ok: false, error: "no_sid" }, 400);
+  if (!sid) return badRequest("missing_sid");
 
-  let code = "";
-  try { const b = await req.json(); code = String(b?.code || "").trim(); } catch {}
-  if (!code) return noStoreJson({ ok: false, error: "missing_code" }, 400);
+  const expected = await redisGet<string>(`auth:otp:${sid}`);
+  const email = await redisGet<string>(`auth:email:${sid}`);
 
-  const rec = await redisGet<{ email: string; code: string }>(`otp:${sid}`);
-  if (!rec?.code || !rec?.email) return noStoreJson({ ok: false, error: "no_pending_otp" }, 400);
-  if (rec.code !== code) return noStoreJson({ ok: false, error: "invalid_code" }, 401);
+  if (!expected || !email) return badRequest("no_otp_pending");
+  if (code !== expected) return unauthorized("invalid_code");
 
-  await redisDel(`otp:${sid}`);
-  await redisSet(`acct:${sid}`, { email: rec.email, createdAt: Date.now() });
-  await redisSet(`sid:byEmail:${rec.email}`, sid); // helpful for re-association
+  // mark the session as signed in for a week
+  await redisSet(`session:user:${sid}`, { email }, 60 * 60 * 24 * 7);
+  await redisDel([`auth:otp:${sid}`, `auth:email:${sid}`]);
 
-  return noStoreJson({ ok: true, sid, email: rec.email });
+  return noStoreJson({ ok: true, email });
 }

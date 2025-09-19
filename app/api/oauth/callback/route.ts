@@ -5,9 +5,8 @@ export const fetchCache = "force-no-store";
 
 import { NextResponse } from "next/server";
 import { cookies as getCookies } from "next/headers";
-import { noStoreJson } from "../../_http";
+import { noStoreJson } from "../_http";
 import { exchangeCodeForToken, redisSet } from "../../_utils";
-import { adoptTokenForThisSession } from "../../_session";
 
 export async function GET(req: Request) {
   const u = new URL(req.url);
@@ -22,17 +21,14 @@ export async function GET(req: Request) {
     const tok = await exchangeCodeForToken(code, `${origin}/api/oauth/callback`);
 
     // 2) If we trust the flow (state matches) we can bind to the current session.
-    //    Either way, adoptTokenForThisSession(tok) will set/refresh the sid cookie
     //    and store tok under tok:<sid> (your _session.ts implementation).
     const jar = await getCookies();
     const stateCookie = jar.get("oauth_state")?.value || null;
     const sidCookie   = jar.get("sid")?.value || null;
 
     if (inboundState && stateCookie && inboundState === stateCookie && sidCookie) {
-      await adoptTokenForThisSession(tok);
     } else {
       // No trusted state/sid? Still adopt so the popup session holds the token.
-      await adoptTokenForThisSession(tok);
     }
 
     // (Optional) keep a convenience pointer for last successful token

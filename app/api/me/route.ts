@@ -4,8 +4,8 @@ export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
 import { headers as getHeaders } from "next/headers";
-import { noStoreJson } from "../../_http";
-import { getTokenFromRequest, getSidFromRequest } from "../../_session";
+import { noStoreJson } from "../_http";
+import { getTokenFromRequest, getSidFromRequest } from "../_session";
 
 export async function GET() {
   // Figure out how this request is carrying session

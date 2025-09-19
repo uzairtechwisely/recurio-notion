@@ -5,7 +5,7 @@ export const fetchCache = "force-no-store";
 
 import { noStoreJson } from "../_http";
 import { notionClient } from "../_utils";
-import { getTokenFromRequest } from "../../_session";
+import { getTokenFromRequest } from "../_session";
 
 type Db = { id: string; title: string };
 

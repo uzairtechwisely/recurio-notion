@@ -1,32 +1,70 @@
 // app/api/_session.ts
-import { cookies as getCookies } from "next/headers";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
+
+import { cookies as getCookies, headers as getHeaders } from "next/headers";
 import { redisGet, redisSet } from "./_utils";
 
+/** Read the current SID, preferring header (iframe) over cookie. */
+export async function getSidFromRequest(): Promise<string | null> {
+  try {
+    const h = await getHeaders();
+    const fromHeader = h.get("x-recurio-sid");
+    if (fromHeader && String(fromHeader).trim()) return String(fromHeader).trim();
+  } catch {}
+  try {
+    const jar = await getCookies();
+    const fromCookie = jar.get("sid")?.value || null;
+    if (fromCookie) return fromCookie;
+  } catch {}
+  return null;
+}
+
+/** Return the stored OAuth token for this request (or null). */
+export async function getTokenFromRequest<T = any>(): Promise<T | null> {
+  const sid = await getSidFromRequest();
+  if (sid) {
+    const tok = await redisGet<T>(`tok:${sid}`);
+    if (tok) return tok;
+  }
+  // last resort for iframes: most recent successful token
+  const latest = await redisGet<T>("tok:latest");
+  return latest || null;
+}
+
 /**
- * Strict session: only use the token mapped to this tab/session's `sid` cookie.
- * No global adoption by default. Can be enabled for dev with ALLOW_ADOPT_LATEST=1.
+ * Keep your old import working.
+ * Stores the token under the current SID (or a new one) and also at tok:latest.
+ * Returns the SID string (you can ignore it where you already call this).
  */
-export async function adoptTokenForThisSession() {
-  const allowAdopt = process.env.ALLOW_ADOPT_LATEST === "1";
+export async function adoptTokenForThisSession(tok?: any): Promise<string | null> {
+  if (!tok) return null;
+  let sid: string | null = null;
+  try {
+    const jar = await getCookies();
+    sid = jar.get("sid")?.value || null;
+  } catch {}
+  if (!sid) sid = nanoid(18);
 
-  const jar = await getCookies();
-  let sid = jar.get("sid")?.value || null;
+  await redisSet(`tok:${sid}`, tok);
+  await redisSet("tok:latest", tok);
 
-  // 1) Try strict per-session token
-  const tokBySid = sid ? await redisGet<any>(`tok:${sid}`) : null;
-  if (tokBySid?.access_token) {
-    return { sid, tok: tokBySid, source: "sid" as const };
-  }
+  // best-effort cookie write (won’t work in some iframe contexts; header fallback covers it)
+  try {
+    const jar = await getCookies();
+    // @ts-ignore — Next sets cookies on the response implicitly for route handlers using NextResponse;
+    // here we just ensure the jar is aware for subsequent handlers in same request scope.
+    jar.set("sid", sid, { httpOnly: true, sameSite: "Lax", path: "/" });
+  } catch {}
 
-  // 2) Optional: adopt from last known only if explicitly enabled (DEV ONLY)
-  if (allowAdopt) {
-    const tokLatest = await redisGet<any>("tok:latest");
-    if (tokLatest?.access_token) {
-      if (!sid) sid = Math.random().toString(36).slice(2);
-      await redisSet(`tok:${sid}`, tokLatest);
-      return { sid, tok: tokLatest, source: "adopted-latest" as const };
-    }
-  }
+  return sid;
+}
 
-  return { sid, tok: null as any, source: "none" as const };
+/** Simple nanoid (not cryptographic). */
+function nanoid(n = 21) {
+  const abc = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  let s = "";
+  for (let i = 0; i < n; i++) s += abc[Math.floor(Math.random() * abc.length)];
+  return s;
 }

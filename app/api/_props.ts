@@ -46,7 +46,7 @@ export function extractDueISO(props: any): string | null {
 
 /** Detect “done” via: checkbox(true), status('done' etc), select/multi_select('done' etc), or formula(checkbox=true). */
 export function isTaskDone(props: any): boolean {
-  const doneWords = ["done", "complete", "completed", "finished", "resolved", "closed", "✅", "✔"];
+  const doneWords: string[] = ["done", "complete", "completed", "finished", "resolved", "closed", "✅", "✔"];
 
   // 1) strong signal: a checkbox named like “Done/Complete” and true
   for (const k of Object.keys(props || {})) {
@@ -69,7 +69,7 @@ export function isTaskDone(props: any): boolean {
     const p = props[k];
     if (p?.type === "status") {
       const name = norm(p?.status?.name || "");
-      if (name && doneWords.some(w => name.includes(w))) return true;
+      if (name && doneWords.some((w: string) => name.includes(w))) return true;
     }
   }
 
@@ -78,11 +78,11 @@ export function isTaskDone(props: any): boolean {
     const p = props[k];
     if (p?.type === "select") {
       const name = norm(p?.select?.name || "");
-      if (name && doneWords.some(w => name.includes(w))) return true;
+      if (name && doneWords.some((w: string) => name.includes(w))) return true;
     }
     if (p?.type === "multi_select") {
       const names = (p?.multi_select || []).map((o: any) => norm(o?.name || ""));
-      if (names.some(n => doneWords.some(w => n.includes(w)))) return true;
+      if (names.some((n: string) => doneWords.some((w: string) => n.includes(w)))) return true;
     }
   }
 

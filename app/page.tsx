@@ -73,6 +73,24 @@ export default function RecurioDashboard() {
   const selectedTask = useMemo(() => tasks.find(t => t.id === taskId) || null, [tasks, taskId]);
 
   useEffect(() => {
+  const h = new URL(window.location.href).searchParams.get("handoff");
+  if (h) {
+    fetch(`/api/session/adopt?h=${encodeURIComponent(h)}`, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+    }).finally(() => {
+      // clean URL
+      const url = new URL(window.location.href);
+      url.searchParams.delete("handoff");
+      window.history.replaceState({}, "", url.toString());
+      // refresh UI
+      refreshConnection().then(() => refreshDatabases());
+    });
+  }
+}, []);
+  
+  useEffect(() => {
     fetch("/api/session/init", { credentials: "include" }).catch(() => {});
     refreshConnection();
   }, []);
@@ -186,7 +204,17 @@ export default function RecurioDashboard() {
 
       <section style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
         <div>
-          <Btn onClick={onConnect}>Connect Notion</Btn>
+          <button
+                onClick={() => {
+                  window.open(
+                    "/api/oauth/start",
+                    "recurio-oauth",
+                    "width=600,height=750,noopener,noreferrer"
+                  );
+                }}
+              >
+                Connect Notion
+         </button>
           <Help title="Opens Notion OAuth in a popup/tab. Approve access; this dashboard will auto-refresh, in-browser or inside Notion iframe." />
         </div>
         <div style={{ textAlign: "right" }}>

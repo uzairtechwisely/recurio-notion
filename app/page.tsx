@@ -77,15 +77,22 @@ export default function RecurioDashboard() {
     refreshConnection();
   }, []);
   useEffect(() => {
-    function onMsg(e: MessageEvent) {
-      if (e?.data?.type === "recurio:oauth-complete") {
-        setStatus("Connected. Loading…");
-        refreshConnection().then(() => refreshDatabases());
+  async function onMsg(e: MessageEvent) {
+    if (e?.data?.type === "recurio:oauth-complete") {
+      const h = e?.data?.handoff;
+      if (h) {
+        // Bind token to this origin’s session
+        await fetch(`/api/session/adopt?h=${encodeURIComponent(h)}`, { method: "POST", credentials: "include", cache: "no-store" });
       }
+      // then refresh UI
+      setStatus("Connected. Loading…");
+      await refreshConnection();
+      await refreshDatabases();
     }
-    window.addEventListener("message", onMsg);
-    return () => window.removeEventListener("message", onMsg);
-  }, []);
+  }
+  window.addEventListener("message", onMsg);
+  return () => window.removeEventListener("message", onMsg);
+}, []);
 
   async function refreshConnection() {
     const { ok, body } = await callApi<{ connected: boolean; source?: string }>("/api/me");

@@ -5,15 +5,19 @@ export const fetchCache = "force-no-store";
 
 import { noStoreJson } from "../../_http";
 import { redisDel } from "../../_utils";
-import { adoptTokenForThisSession } from "../../_session";
+import { getSidFromRequest } from "../../_session";
 
 export async function POST() {
-  const { sid } = await adoptTokenForThisSession();
+  const sid = await getSidFromRequest();
   if (!sid) return noStoreJson({ ok: true, note: "no sid" });
 
   try { if (typeof redisDel === "function") await redisDel(`tok:${sid}`); } catch {}
 
   const res = noStoreJson({ ok: true, cleared: [`tok:${sid}`] });
-  res.cookies.set({ name: "oauth_state", value: "", path: "/", maxAge: 0 });
+
+  // Clear session cookies
+  res.cookies.set({ name: "sid", value: "", path: "/", httpOnly: true, sameSite: "lax", maxAge: 0 });
+  res.cookies.set({ name: "oauth_state", value: "", path: "/", httpOnly: true, sameSite: "lax", maxAge: 0 });
+
   return res;
 }

@@ -5,14 +5,14 @@ export const fetchCache = "force-no-store";
 
 import { noStoreJson } from "../_http";
 import { notionClient } from "../_utils";
-import { adoptTokenForThisSession } from "../_session";
+import { getTokenFromRequest } from "../../_session";
 
 type Db = { id: string; title: string };
 
 export async function GET() {
-  const { tok } = await adoptTokenForThisSession();
-  if (!tok?.access_token) return noStoreJson({ databases: [] }, 401);
-  const notion = notionClient(tok.access_token);
+  const tok = await getTokenFromRequest<any>();
+if (!tok?.access_token) return noStoreJson({ ok: false, error: "no_token" }, 401);
+const notion = notionClient(tok.access_token);
 
   try {
     const out: Db[] = [];

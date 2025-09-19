@@ -6,12 +6,18 @@ export const fetchCache = "force-no-store";
 import { cookies as getCookies, headers as getHeaders } from "next/headers";
 import { redisGet, redisSet } from "./_utils";
 
-/** Read the current SID, preferring header (iframe) over cookie. */
+/**
+ * Read the current SID, preferring an iframe/popup header over cookies.
+ * Supports both x-recurio-sid (current) and x-recurio-session (back-compat).
+ */
 export async function getSidFromRequest(): Promise<string | null> {
   try {
     const h = await getHeaders();
-    const fromHeader = h.get("x-recurio-sid");
-    if (fromHeader && String(fromHeader).trim()) return String(fromHeader).trim();
+    const fromHeader =
+      h.get("x-recurio-sid") || h.get("x-recurio-session") || null;
+    if (fromHeader && String(fromHeader).trim()) {
+      return String(fromHeader).trim();
+    }
   } catch {}
   try {
     const jar = await getCookies();
@@ -21,25 +27,38 @@ export async function getSidFromRequest(): Promise<string | null> {
   return null;
 }
 
-/** Return the stored OAuth token for this request (or null). */
+/**
+ * Return the stored OAuth token for this request (or null).
+ * By default we keep your previous behavior: fall back to "tok:latest".
+ * To disable that auto-connect, set env RECURIO_USE_LATEST_FALLBACK=false.
+ */
+const USE_LATEST_FALLBACK =
+  (process.env.RECURIO_USE_LATEST_FALLBACK ?? "true").toLowerCase() !== "false";
+
 export async function getTokenFromRequest<T = any>(): Promise<T | null> {
   const sid = await getSidFromRequest();
   if (sid) {
     const tok = await redisGet<T>(`tok:${sid}`);
     if (tok) return tok;
   }
-  // last resort for iframes: most recent successful token
-  const latest = await redisGet<T>("tok:latest");
-  return latest || null;
+  if (USE_LATEST_FALLBACK) {
+    const latest = await redisGet<T>("tok:latest");
+    if (latest) return latest;
+  }
+  return null;
 }
 
 /**
- * Keep your old import working.
- * Stores the token under the current SID (or a new one) and also at tok:latest.
- * Returns the SID string (you can ignore it where you already call this).
+ * Bind a freshly exchanged Notion token to this browser session.
+ * - Ensures a SID (reuses cookie if present, else mints new)
+ * - Stores token under tok:<sid> and tok:latest (for optional fallback)
+ * - Sets/refreshes the 'sid' cookie (httpOnly, lax)
+ * Returns the SID string (or null if no token provided).
  */
 export async function adoptTokenForThisSession(tok?: any): Promise<string | null> {
   if (!tok) return null;
+
+  // 1) Reuse existing SID if present; otherwise mint one.
   let sid: string | null = null;
   try {
     const jar = await getCookies();
@@ -47,16 +66,25 @@ export async function adoptTokenForThisSession(tok?: any): Promise<string | null
   } catch {}
   if (!sid) sid = nanoid(18);
 
+  // 2) Persist token
   await redisSet(`tok:${sid}`, tok);
-  await redisSet("tok:latest", tok);
+  await redisSet("tok:latest", tok); // convenience pointer (can be disabled via getTokenFromRequest flag)
 
-  // best-effort cookie write (won’t work in some iframe contexts; header fallback covers it)
+  // 3) Best-effort cookie write (works in route handlers/actions)
   try {
     const jar = await getCookies();
-    // @ts-ignore — Next sets cookies on the response implicitly for route handlers using NextResponse;
-    // here we just ensure the jar is aware for subsequent handlers in same request scope.
-    jar.set("sid", sid, { httpOnly: true, sameSite: "Lax", path: "/" });
-  } catch {}
+    // Next expects lower-case samesite values; avoid type errors.
+    jar.set({
+      name: "sid",
+      value: sid,
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      // omit `secure` to work on http during early testing; set to true when you’re fully on HTTPS
+    });
+  } catch {
+    // ignore: in non-request contexts cookies() may not be writable
+  }
 
   return sid;
 }

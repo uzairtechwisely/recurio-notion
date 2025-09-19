@@ -199,6 +199,37 @@ export default function Page() {
     });
   };
 
+  // Auto-adopt a connection if ?c=<connId> is in the URL (works in iframe or normal)
+useEffect(() => {
+  const url = new URL(window.location.href);
+  const cid = url.searchParams.get("c");
+  if (!cid) return;
+
+  (async () => {
+    try {
+      setStatus("Connecting…");
+      await fetch(`/api/session/adopt-connection?c=${encodeURIComponent(cid)}`, {
+        method: "POST",
+        headers: { "x-recurio-sid": (document.cookie.match(/(?:^|; )sid=([^;]+)/)?.[1] || "") },
+        cache: "no-store",
+      });
+    } catch {}
+    // After adoption, refresh as usual
+    try {
+      const ok = await refreshConnection();
+      if (ok) {
+        await refreshDatabases();
+        setStatus("Connected ✅");
+      } else {
+        setStatus("Connected, but couldn’t fetch /me");
+      }
+    } catch {
+      setStatus("Connected, but refresh failed");
+    }
+  })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
   /* ----- OAuth handoff: message & URL param (iframe safe) ----- */
   useEffect(() => {
     // URL handoff (?handoff=...)

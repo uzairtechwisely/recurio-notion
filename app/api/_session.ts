@@ -35,13 +35,15 @@ export async function getSidFromRequest(): Promise<string | null> {
 const USE_LATEST_FALLBACK =
   (process.env.RECURIO_USE_LATEST_FALLBACK ?? "true").toLowerCase() !== "false";
 
+/** Return the stored OAuth token for this request (or null). */
 export async function getTokenFromRequest<T = any>(): Promise<T | null> {
   const sid = await getSidFromRequest();
   if (sid) {
     const tok = await redisGet<T>(`tok:${sid}`);
     if (tok) return tok;
   }
-  if (USE_LATEST_FALLBACK) {
+  // Optional fallback (disabled by default) to avoid any cross-user leakage
+  if (process.env.ALLOW_LATEST_FALLBACK === "1") {
     const latest = await redisGet<T>("tok:latest");
     if (latest) return latest;
   }

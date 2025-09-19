@@ -18,40 +18,29 @@ export async function GET(req: Request) {
   const stateCookie = jar.get("oauth_state")?.value || null;
   const sid = jar.get("sid")?.value || null;
 
-  if (!code || !inboundState || !stateCookie || inboundState !== stateCookie || !sid) {
-    return noStoreJson({ ok: false, error: "Bad OAuth state" }, 400);
-  }
+  if (!code) return noStoreJson({ ok: false, error: "missing_code" }, 400);
 
   try {
-    // 1) Exchange code → token
+    // Exchange code → token
     const tok = await exchangeCodeForToken(code, `${origin}/api/oauth/callback`);
 
-    // 2) Persist token (session + latest fallback for iframe/popup)
-    await redisSet(`tok:${sid}`, tok);
-    await redisSet(`tok:latest`, tok);
-
-    // 3) Sanity probe via REST (SDK versions differ on users.me())
-    const probe = await fetch("https://api.notion.com/v1/users/me", {
-      headers: {
-        Authorization: `Bearer ${tok.access_token}`,
-        "Notion-Version": "2022-06-28",
-        "Content-Type": "application/json",
-      },
-      cache: "no-store",
-    });
-    if (!probe.ok) {
-      const text = await probe.text().catch(() => "");
-      throw new Error(`notion_probe_failed ${probe.status}: ${text}`);
+    // If state & sid are good, bind to this sid now (best effort)
+    if (inboundState && stateCookie && inboundState === stateCookie && sid) {
+      try {
+        await redisSet(`tok:${sid}`, tok);
+        await redisSet("tok:latest", tok);
+      } catch {}
     }
 
-    // 4) Redirect to a page that postMessage()'s success and closes (popup/iframe safe)
-    return NextResponse.redirect(`${origin}/oauth/done`, {
-      headers: { "Cache-Control": "no-store" },
+    // Always create a handoff id for iframe-safe adoption
+    const handoff = crypto.randomUUID();
+    await redisSet(`handoff:${handoff}`, tok); // we’ll delete it on adopt
+
+    // Redirect to broadcaster (it will postMessage {handoff} and close)
+    return NextResponse.redirect(`${origin}/oauth/done?h=${encodeURIComponent(handoff)}`, {
+      headers: { "Cache-Control": "no-store" }
     });
   } catch (e: any) {
-    return noStoreJson(
-      { ok: false, error: "oauth_callback_failed", detail: e?.message || String(e) },
-      500
-    );
+    return noStoreJson({ ok: false, error: "oauth_callback_failed", detail: e?.message || String(e) }, 500);
   }
 }

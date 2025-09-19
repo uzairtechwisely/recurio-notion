@@ -289,12 +289,9 @@ export default function Page() {
 
   /* ----- actions ----- */
   function openConnectPopup() {
-    window.open(
-      "/api/oauth/start",
-      "recurio-oauth",
-      "width=600,height=750,noopener,noreferrer"
-    );
-  }
+  // IMPORTANT: no "noopener" or "noreferrer" so window.opener is available for postMessage
+  window.open("/api/oauth/start", "recurio-oauth", "width=600,height=750");
+}
 
   async function onDisconnect() {
     setInlineError((p) => ({ ...p, disconnect: null }));

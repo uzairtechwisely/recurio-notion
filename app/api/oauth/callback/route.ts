@@ -36,10 +36,12 @@ export async function GET(req: Request) {
     const handoff = crypto.randomUUID();
     await redisSet(`handoff:${handoff}`, tok); // we’ll delete it on adopt
 
-    // Redirect to broadcaster (it will postMessage {handoff} and close)
-    return NextResponse.redirect(`${origin}/oauth/done?h=${encodeURIComponent(handoff)}`, {
-      headers: { "Cache-Control": "no-store" }
-    });
+   
+// Redirect to broadcaster (it will postMessage {handoff} and close)
+return NextResponse.redirect(
+  `${origin}/api/oauth/done?h=${encodeURIComponent(handoff)}`,
+  { headers: { "Cache-Control": "no-store" } }
+);
   } catch (e: any) {
     return noStoreJson({ ok: false, error: "oauth_callback_failed", detail: e?.message || String(e) }, 500);
   }

@@ -35,6 +35,6 @@ export async function POST(req: Request) {
 
   // set cookie if possible (won’t work in some iframe contexts; header fallback will be used)
   const res = NextResponse.json({ ok: true, sid });
-  try { res.cookies.set("sid", sid, { httpOnly: true, sameSite: "Lax", path: "/" }); } catch {}
+  try { res.cookies.set("sid", sid, { httpOnly: true, sameSite: "lax", path: "/" }); } catch {}
   return res;
 }

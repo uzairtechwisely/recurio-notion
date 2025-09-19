@@ -1,5 +1,4 @@
 export const runtime = "nodejs";
-export const runtime = "edge";
 export const fetchCache = "force-no-store";
 
 import { noStoreJson, badRequest } from "../_http";
